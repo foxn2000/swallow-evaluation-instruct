@@ -364,6 +364,7 @@ lighteval endpoint litellm \
 * `BFCL_V4_DATA_DIR`（独自）：BFCL v4 のテストデータのディレクトリ．GitHubに接続できない環境で使用します．
 * `SWALLOW_EVAL_CACHE_DIR`（独自）：HuggingFace Hub 以外から取得するデータのキャッシュ先．既定値は `~/.cache/swallow-evaluation-instruct`．
 * `JFBENCH_MAX_CONCURRENCY`（独自）：JFBench で設問を同時に評価する数．既定値は16．
+* `LITELLM_REQUEST_LOG`（独自）：推論APIの呼び出し1回ごとの情報（トークン数・課金額・応答時間・終了理由）を JSON Lines で記録するファイルのパス．評価結果の分析や実行コストの見積もりに使えます．指定しない場合は記録しません．
 
 ### LLM-as-a-Judge に使うモデルの指定
 

@@ -35,11 +35,14 @@ export JFBENCH_MAX_CONCURRENCY="${JFBENCH_MAX_CONCURRENCY:-32}"
 # トークナイザのダウンロードで警告が出るのを抑える．
 export TOKENIZERS_PARALLELISM=false
 
+
 LIGHTEVAL="${LIGHTEVAL:-.venv/bin/lighteval}"
 
 LOG_DIR="$OUT_DIR/logs"
 STATE_DIR="$OUT_DIR/state"
 mkdir -p "$LOG_DIR" "$STATE_DIR"
+# 推論APIの呼び出し1回ごとの情報（トークン数・課金額・応答時間）を記録する．
+export LITELLM_REQUEST_LOG="${LITELLM_REQUEST_LOG:-$OUT_DIR/api_requests.jsonl}"
 
 SUITE_LOG="$LOG_DIR/00_suite.log"
 

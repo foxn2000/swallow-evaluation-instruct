@@ -21,12 +21,15 @@
 # SOFTWARE.
 
 import os
+import json
 import logging
+import threading
 import time
 import math
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Optional, List
 
 import yaml
@@ -64,6 +67,56 @@ PROVIDERS_WITHOUT_MULTI_SAMPLE_SUPPORT = ("openrouter",)
 # OpenRouter 経由で呼ぶ場合はモデル名が "openrouter/openai/gpt-5.4-mini" のように
 # なるため，プロバイダ名を取り除いた上で判定する．
 OPENAI_RESTRICTED_SAMPLING_MODEL_MARKERS = ("o1", "o3", "o4", "gpt-5")
+
+
+class _RequestLogger:
+    """推論APIの呼び出し1回ごとの情報を JSON Lines で記録する（独自拡張）．
+
+    環境変数 `LITELLM_REQUEST_LOG` にファイルパスを指定すると有効になる．
+    トークン数・課金額・応答時間・終了理由を記録するので，評価結果の分析や
+    実行コストの見積もりに使える．評価スコアには影響しない．
+
+    lighteval は推論APIをスレッドプールで並列に呼ぶため，書き込みはロックで
+    直列化する．
+    """
+
+    def __init__(self, path: str) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+        self._warned = False
+
+    def log(self, record: dict) -> None:
+        try:
+            line = json.dumps(record, ensure_ascii=False, default=str)
+            with self._lock, open(self._path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception as e:  # noqa: BLE001 - ログの失敗で評価を止めない
+            if not self._warned:
+                logger.warning(f"Could not write to LITELLM_REQUEST_LOG: {type(e).__name__}: {e}")
+                self._warned = True
+
+
+@lru_cache(maxsize=1)
+def _request_logger() -> Optional[_RequestLogger]:
+    path = os.getenv("LITELLM_REQUEST_LOG")
+    if not path:
+        return None
+    logger.info(f"Logging one JSON object per inference API call to {path}")
+    return _RequestLogger(path)
+
+
+def _usage_as_dict(response) -> dict:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return {}
+    if hasattr(usage, "model_dump"):
+        try:
+            return usage.model_dump()
+        except Exception:  # noqa: BLE001
+            pass
+    if isinstance(usage, dict):
+        return dict(usage)
+    return {}
 
 
 def _model_id_without_provider(model: str) -> str:
@@ -317,7 +370,29 @@ class LiteLLMClient(LightevalModel):
                 if kwargs.get("max_completion_tokens", None) is None:
                     kwargs["max_completion_tokens"] = max_new_tokens
                 
+                request_started = time.monotonic()
                 response = litellm.completion(**kwargs, timeout=litellm.DEFAULT_REQUEST_TIMEOUT)
+
+                # 独自拡張：呼び出し1回ごとの情報を記録する（LITELLM_REQUEST_LOG）．
+                request_log = _request_logger()
+                if request_log is not None:
+                    request_log.log(
+                        {
+                            "timestamp": time.time(),
+                            "model": self.model,
+                            "n": n,
+                            "latency_seconds": round(time.monotonic() - request_started, 3),
+                            "max_completion_tokens": kwargs.get("max_completion_tokens"),
+                            "temperature": kwargs.get("temperature"),
+                            "top_p": kwargs.get("top_p"),
+                            "usage": _usage_as_dict(response),
+                            "finish_reasons": [
+                                getattr(choice, "finish_reason", None)
+                                for choice in getattr(response, "choices", []) or []
+                            ],
+                            "num_prompt_messages": len(prompt) if isinstance(prompt, list) else None,
+                        }
+                    )
 
                 # If response content is null, replace with empty string
                 if response is not None:
