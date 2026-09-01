@@ -51,9 +51,18 @@ log() {
 }
 
 # run_task <ラベル> <タスクID> <生成パラメータ> [追加の実行時引数...]
+# タスクIDには few-shot 数の指定（|0|0）を自動で付ける．
 run_task() {
     local label="$1"; shift
     local task_id="$1"; shift
+    run_task_raw "$label" "${task_id}|0|0" "$@"
+}
+
+# run_task_raw <ラベル> <タスク指定> <生成パラメータ> [追加の実行時引数...]
+# タスク指定は lighteval にそのまま渡す（複数タスクのカンマ区切りも可）．
+run_task_raw() {
+    local label="$1"; shift
+    local task_spec="$1"; shift
     local gen_params="$1"; shift
 
     # SUITE_INCLUDE / SUITE_EXCLUDE で実行するベンチマークを絞れる（拡張正規表現）．
@@ -88,25 +97,25 @@ run_task() {
     fi
 
     local task_log="$LOG_DIR/$label.log"
-    log "START $label -> $task_id"
+    log "START $label -> $task_spec"
     local started
     started=$(date +%s)
 
     if "$LIGHTEVAL" endpoint litellm \
             "$model_args" \
-            "${task_id}|0|0" \
+            "$task_spec" \
             --use-chat-template \
             --output-dir "$OUT_DIR" \
             --save-details \
             "$@" >"$task_log" 2>&1; then
         local elapsed=$(( $(date +%s) - started ))
-        printf '%s\n' "$task_id" >"$done_marker"
+        printf '%s\n' "$task_spec" >"$done_marker"
         rm -f "$STATE_DIR/$label.failed"
         log "OK    $label (${elapsed}s)"
     else
         local elapsed=$(( $(date +%s) - started ))
         log "FAIL  $label (${elapsed}s) -- see $task_log"
-        printf '%s\n' "$task_id" >"$STATE_DIR/$label.failed"
+        printf '%s\n' "$task_spec" >"$STATE_DIR/$label.failed"
     fi
     rm -f "$running_marker"
 }
@@ -166,24 +175,7 @@ MMLU_PROX_TASKS=$("$LIGHTEVAL" tasks list 2>/dev/null \
     | grep -oE 'swallow\|mmlu_prox_japanese:[A-Za-z0-9_]+' | sort -u \
     | sed 's/$/|0|0/' | paste -sd,)
 if [[ -n "$MMLU_PROX_TASKS" ]]; then
-    if [[ -f "$STATE_DIR/mmlu_prox_japanese.done" ]]; then
-        log "SKIP  mmlu_prox_japanese (already completed)"
-    else
-        log "START mmlu_prox_japanese ($(printf '%s' "$MMLU_PROX_TASKS" | tr ',' '\n' | wc -l) subsets)"
-        started=$(date +%s)
-        if "$LIGHTEVAL" endpoint litellm \
-                "model=$MODEL_NAME,api_key=$OPENROUTER_API_KEY,generation_parameters={$GREEDY}" \
-                "$MMLU_PROX_TASKS" \
-                --use-chat-template \
-                --output-dir "$OUT_DIR" \
-                --save-details >"$LOG_DIR/mmlu_prox_japanese.log" 2>&1; then
-            printf 'mmlu_prox_japanese (all subsets)\n' >"$STATE_DIR/mmlu_prox_japanese.done"
-            log "OK    mmlu_prox_japanese ($(( $(date +%s) - started ))s)"
-        else
-            log "FAIL  mmlu_prox_japanese ($(( $(date +%s) - started ))s) -- see $LOG_DIR/mmlu_prox_japanese.log"
-            printf 'mmlu_prox_japanese\n' >"$STATE_DIR/mmlu_prox_japanese.failed"
-        fi
-    fi
+    run_task_raw mmlu_prox_japanese "$MMLU_PROX_TASKS" "$GREEDY"
 else
     log "FAIL  mmlu_prox_japanese -- could not enumerate the subsets"
 fi
