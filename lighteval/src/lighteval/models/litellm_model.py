@@ -194,6 +194,11 @@ class LiteLLMClient(LightevalModel):
         self.pairwise_tokenization = False
         litellm.drop_params = True
         litellm.set_verbose = False
+        # 独自拡張：litellm は自身のモデル一覧に存在しないモデル（OpenRouter に
+        # 追加された新しいモデルなど）を扱うたびに，プロバイダ一覧の案内文を
+        # 標準エラー出力に書き出す．評価1件ごとに出力されて実行ログが読みづらく
+        # なるため抑制する．
+        litellm.suppress_debug_info = True
         
         if self.reasoning_parser is not None:
             logger.warning(f"In-house reasoning_parser={self.reasoning_parser} is set. Please make sure vLLM reasoning_parser is not set. Use a custom parser only for models not supported by the vLLM built-in parser.")
