@@ -13,6 +13,8 @@ develop-eggs/
 dist/
 downloads/
 data/
+# JFBench の設問生成に必要なデータ（vendoring したもの）は除外しない．
+!lighteval/src/lighteval/tasks/swallow/jfbench/_vendor_jfbench/data/
 eggs/
 .eggs/
 lib/
