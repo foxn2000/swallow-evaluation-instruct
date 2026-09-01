@@ -32,7 +32,9 @@ OpenRouter などOpenAI互換APIを提供する任意のプロバイダをジャ
 * ``JUDGE_BASE_URL``：ジャッジ用推論APIのURL．
   （例：``https://openrouter.ai/api/v1``）
 * ``JUDGE_API_KEY``：ジャッジ用推論APIのAPIキー．
-* ``JUDGE_REASONING_EFFORT``：ジャッジの推論の深さ．``none`` を指定すると無効化する．
+* ``JUDGE_REASONING_EFFORT``：ジャッジの推論の深さ．``none`` を指定すると
+  「推論を無効化する」という値としてAPIに渡す．パラメータ自体を送らせたくない
+  場合は ``unset`` を指定する．
 
 利便性のため，``JUDGE_BASE_URL`` が未設定で ``OPENROUTER_API_KEY`` のみが
 設定されている場合は，OpenRouter を使うものとみなす．
@@ -51,7 +53,10 @@ logger = logging.getLogger(__name__)
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 # 環境変数の値としてジャッジ設定を「明示的に無効化」する意味で受け付ける文字列．
-_NONE_LITERALS = frozenset({"", "none", "null", "false"})
+# 注意："none" は含めない．reasoning_effort における "none" は
+# 「推論を無効化する」という意味のある値であり，パラメータ自体を送らないことと
+# 区別する必要がある．
+_UNSET_LITERALS = frozenset({"", "unset", "off", "disabled", "null", "false"})
 
 # 同じ警告を繰り返し出さないためのフラグ．
 # ジャッジ設定はメトリクスごとに解決されるため，何度も呼ばれる．
@@ -102,7 +107,7 @@ class JudgeEndpoint:
 def _resolve_base_url() -> str | None:
     base_url = _env("JUDGE_BASE_URL")
     if base_url is not None:
-        if base_url.lower() in _NONE_LITERALS:
+        if base_url.lower() in _UNSET_LITERALS:
             return None
         return base_url
 
@@ -134,7 +139,7 @@ def _resolve_reasoning_effort(default_reasoning_effort: str | None) -> str | Non
     reasoning_effort = _env("JUDGE_REASONING_EFFORT")
     if reasoning_effort is None:
         return default_reasoning_effort
-    if reasoning_effort.lower() in _NONE_LITERALS:
+    if reasoning_effort.lower() in _UNSET_LITERALS:
         return None
     return reasoning_effort
 

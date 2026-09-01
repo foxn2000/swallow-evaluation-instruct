@@ -358,7 +358,7 @@ lighteval endpoint litellm \
 * `JUDGE_MODEL_NAME`（独自）：LLM-as-a-Judge に使うモデル名．ベンチマーク側の既定値を上書きします．
 * `JUDGE_BASE_URL`（独自）：LLM-as-a-Judge に使う推論APIのURL．
 * `JUDGE_API_KEY`（独自）：LLM-as-a-Judge に使う推論APIのAPIキー．
-* `JUDGE_REASONING_EFFORT`（独自）：LLM-as-a-Judge の推論の深さ．`none` を指定すると無効化します．
+* `JUDGE_REASONING_EFFORT`（独自）：LLM-as-a-Judge の推論の深さ．`none` を指定すると「推論を無効化する」という値としてAPIに渡します．パラメータ自体を送らせたくない場合は `unset` を指定してください．
 * `JUDGE_CONCURRENT_CALLS`（独自）：LLM-as-a-Judge が推論APIを呼ぶときの最大並列数．既定値は10．
 * `OPENROUTER_API_KEY`（独自）：OpenRouter のAPIキー．`JUDGE_BASE_URL` が未設定でこの環境変数のみが設定されている場合は，LLM-as-a-Judge の呼び出し先をOpenRouterとみなします．
 * `BFCL_V4_DATA_DIR`（独自）：BFCL v4 のテストデータのディレクトリ．GitHubに接続できない環境で使用します．

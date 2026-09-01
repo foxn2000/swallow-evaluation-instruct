@@ -42,7 +42,6 @@ from lighteval.metrics.imports.bert_scorer import BERTScorer
 from lighteval.metrics.imports.data_stats_metric import DataStatsMetric
 from lighteval.metrics.imports.summac import SummaCZS
 from lighteval.metrics.llm_as_judge import JudgeLM
-from lighteval.utils.judge_config import resolve_judge_endpoint
 from lighteval.metrics.normalizations import (
     LogProbNormalization,
     LogProbTokenNorm,
@@ -51,6 +50,7 @@ from lighteval.metrics.normalizations import (
     remove_braces_and_strip,
 )
 from lighteval.tasks.requests import Doc
+from lighteval.utils.judge_config import resolve_judge_endpoint
 from lighteval.utils.utils import as_list, safe_divide
 
 

@@ -328,7 +328,9 @@ class JudgeLM:
         # エラーになる場合があるため．
         if self.response_format:
             request_kwargs["response_format"] = self.response_format
-        if self.reasoning_effort is not None and self.reasoning_effort != "none":
+        # "none" は「推論を無効化する」という意味のある値なので，そのまま渡す
+        # （OpenAI の gpt-5 系および OpenRouter 経由の同モデルで受理される）．
+        if self.reasoning_effort is not None:
             request_kwargs["reasoning_effort"] = self.reasoning_effort
 
         for attempt in range(self.API_MAX_RETRY):
