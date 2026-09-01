@@ -89,6 +89,17 @@ dependencies = [
     "janome", # M-IFEval-Ja, WMT20
     "nagisa", # WMT20
     "emoji", # IFBench
+    "esprima", # JFBench (JavaScript constraint checking)
+    "html5lib", # JFBench (HTML constraint checking)
+    "markdown-it-py", # JFBench (Markdown constraint checking)
+    "pylatexenc", # JFBench (LaTeX constraint checking)
+    "pysbd", # JFBench (sentence segmentation)
+    "PyYAML", # JFBench (YAML constraint checking)
+    # BFCL v4 (Java/JavaScript function call parsing).
+    # BFCL uses the pre-0.22 tree-sitter API, so the version must stay pinned.
+    "tree_sitter==0.21.3",
+    "tree-sitter-java==0.21.0",
+    "tree-sitter-javascript==0.21.4",
 ]
 
 [project.optional-dependencies]

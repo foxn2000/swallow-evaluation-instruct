@@ -42,6 +42,7 @@ from lighteval.metrics.imports.bert_scorer import BERTScorer
 from lighteval.metrics.imports.data_stats_metric import DataStatsMetric
 from lighteval.metrics.imports.summac import SummaCZS
 from lighteval.metrics.llm_as_judge import JudgeLM
+from lighteval.utils.judge_config import resolve_judge_endpoint
 from lighteval.metrics.normalizations import (
     LogProbNormalization,
     LogProbTokenNorm,
@@ -884,14 +885,26 @@ class JudgeLLM:
         short_judge_name: str | None = None,
         response_format: BaseModel = None,
         reasoning_effort: str | None = None,
+        error_response: str | None = None,
     ) -> None:
         match judge_backend:
             case "openai":
-                if judge_model_name not in self.available_models_openai:
+                # 独自拡張：環境変数（JUDGE_MODEL_NAME / JUDGE_BASE_URL / JUDGE_API_KEY /
+                # JUDGE_REASONING_EFFORT）でジャッジの呼び出し先を上書きできるようにする．
+                # これにより OpenRouter などOpenAI互換APIのモデルをジャッジに使える．
+                endpoint = resolve_judge_endpoint(
+                    default_model=judge_model_name,
+                    default_reasoning_effort=reasoning_effort,
+                    default_short_name=short_judge_name,
+                )
+                # 呼び出し先を上書きした場合は，OpenAIのモデル名の許可リストは適用しない．
+                if not endpoint.is_overridden and judge_model_name not in self.available_models_openai:
                     raise ValueError(f"{judge_model_name} not in available models for llm as a judge metric")
-                else:
-                    api_key = os.getenv("OPENAI_API_KEY")
-                    url = None
+                judge_model_name = endpoint.model
+                short_judge_name = endpoint.short_name
+                reasoning_effort = endpoint.reasoning_effort
+                api_key = endpoint.api_key
+                url = endpoint.base_url
             case "tgi":
                 api_key = os.getenv("HF_TOKEN")
                 url = "https://api-inference.huggingface.co/v1/"
@@ -918,6 +931,7 @@ class JudgeLLM:
             judge_backend=judge_backend,
             response_format=response_format,
             reasoning_effort=reasoning_effort,
+            error_response=error_response,
         )
 
     def compute(self, predictions: list[str], formatted_doc: Doc, **kwargs) -> dict[str, float]:

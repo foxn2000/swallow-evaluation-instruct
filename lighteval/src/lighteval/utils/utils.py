@@ -19,6 +19,8 @@ import numpy as np
 from datasets import DatasetDict, load_dataset
 from pytablewriter import MarkdownTableWriter
 
+from lighteval.utils.local_datasets import is_local_dataset, load_local_dataset
+
 
 def flatten_dict(nested: dict, sep="/") -> dict:
     """Flatten dictionary, list, tuple and concatenate nested keys with separator."""
@@ -225,15 +227,20 @@ def download_dataset_worker(
     Worker function to download a dataset from the HuggingFace Hub.
     Used for parallel dataset loading.
     """
-    dataset = load_dataset(
-        path=dataset_path,
-        name=dataset_config_name,
-        data_dir=None,
-        cache_dir=None,
-        download_mode=None,
-        trust_remote_code=trust_dataset,
-        revision=revision,
-    )
+    # 独自拡張：HuggingFace Hub 以外の場所からデータセットを読み込めるようにする．
+    # 詳細は lighteval/utils/local_datasets.py を参照．
+    if is_local_dataset(dataset_path):
+        dataset = load_local_dataset(dataset_path, dataset_config_name)
+    else:
+        dataset = load_dataset(
+            path=dataset_path,
+            name=dataset_config_name,
+            data_dir=None,
+            cache_dir=None,
+            download_mode=None,
+            trust_remote_code=trust_dataset,
+            revision=revision,
+        )
 
     if dataset_filter is not None:
         dataset = dataset.filter(dataset_filter)

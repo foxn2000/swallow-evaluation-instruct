@@ -22,6 +22,7 @@
 
 
 import logging
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Literal
@@ -39,6 +40,10 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_FORMAT = {"type": "text"}
+
+# 独自拡張：ジャッジの推論API呼び出しの最大並列数．OpenRouterのように
+# レート制限がプロバイダごとに異なる場合に調整できるようにする．
+DEFAULT_JUDGE_CONCURRENT_CALLS = 10
 
 
 class JudgeLM:
@@ -83,12 +88,20 @@ class JudgeLM:
         api_key: str | None = None,
         response_format: BaseModel = None,
         reasoning_effort: str | None = None,
+        error_response: str | None = None,
     ):
         self.model = model
         self.template = templates
 
         self.API_MAX_RETRY = 3
         self.API_RETRY_SLEEP = 1
+        # 独自拡張：リトライを使い切ったときに例外を投げるかわりに返す文字列．
+        # 安全性ベンチマークのように，ジャッジ側の拒否・エラーを「スコア付けできない
+        # 応答」として扱いたい場合に使用する（None のときは従来どおり例外を投げる）．
+        self.error_response = error_response
+        self.CONCURRENT_CALLS = int(
+            os.getenv("JUDGE_CONCURRENT_CALLS", DEFAULT_JUDGE_CONCURRENT_CALLS)
+        )
 
         self.client = None
         self.pipe = None
@@ -287,7 +300,7 @@ class JudgeLM:
 
     def __call_api_parallel(self, prompts):
         results = []
-        with ThreadPoolExecutor(10) as executor:
+        with ThreadPoolExecutor(self.CONCURRENT_CALLS) as executor:
             for entry in tqdm(executor.map(self.__call_api, prompts), total=len(prompts)):
                 results.append(entry)
 
@@ -306,15 +319,19 @@ class JudgeLM:
         request_kwargs = {
             "model": self.model,
             "messages": as_list(prompt),
-            "response_format": self.response_format,
             "max_completion_tokens": max_completion_tokens,
             "temperature": temperature,
             "n": 1,
         }
-        if self.reasoning_effort is not None:
+        # 独自拡張：response_format を明示指定していない場合はリクエストに含めない．
+        # OpenAI以外のOpenAI互換API（OpenRouterなど）では null を渡すと
+        # エラーになる場合があるため．
+        if self.response_format:
+            request_kwargs["response_format"] = self.response_format
+        if self.reasoning_effort is not None and self.reasoning_effort != "none":
             request_kwargs["reasoning_effort"] = self.reasoning_effort
 
-        for _ in range(self.API_MAX_RETRY):
+        for attempt in range(self.API_MAX_RETRY):
             try:
                 # Prefer create() first
                 try:
@@ -329,7 +346,16 @@ class JudgeLM:
                     answer = response.choices[0].message.parsed
                     return answer
             except Exception as e:
-                logger.warning(f"{type(e), e}")
-                time.sleep(self.API_RETRY_SLEEP)
+                # 独自拡張：指数バックオフでリトライする（レート制限への耐性を上げる）．
+                wait_time = min(64, self.API_RETRY_SLEEP * (2**attempt))
+                logger.warning(
+                    f"{type(e), e}, waiting {wait_time} seconds before retry "
+                    f"{attempt + 1}/{self.API_MAX_RETRY}"
+                )
+                time.sleep(wait_time)
+
+        if self.error_response is not None:
+            logger.error(f"Failed to get response from the API; returning {self.error_response!r}")
+            return self.error_response
 
         raise Exception("Failed to get response from the API")

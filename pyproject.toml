@@ -28,6 +28,16 @@ lighteval = [
     "litellm>=1.75.8", # Set the ceiling to support gpt-oss
 ]
 
+# API経由のモデル（OpenRouter・OpenAIなど）のみを評価する場合に使う軽量版．
+# vLLM を含まないため GPU が不要で，インストール時間およびディスク使用量を大幅に削減できる．
+lighteval_api = [
+    "lighteval[math,extended_tasks,litellm]",
+    "transformers>=5.5.0",
+    "openai>=1.40.0",
+    "datasets>=3.6.0,<4.0.0",
+    "litellm>=1.75.8",
+]
+
 vllm = [
   # "vllm==0.18.0", # Set the ceiling to support gpt-oss
   "vllm==0.19.1",
@@ -56,6 +66,7 @@ conflicts = [
     { extra = "auto_detector" },
     { extra = "aggregate_results" },
     { extra = "lighteval" },
+    { extra = "lighteval_api" },
     { extra = "vllm" },
   ],
 ]

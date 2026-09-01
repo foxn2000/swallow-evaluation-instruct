@@ -190,3 +190,6 @@ scripts/qsub/utils/issue_manager/issues_status/
 scripts/qsub/utils/issue_manager/resub/
 scripts/qsub/utils/issue_manager/visualized/
 !scripts/qsub/utils/issue_manager/issues/template
+
+# 評価実行のログ・成果物（本リポジトリには含めない）
+/runs/
