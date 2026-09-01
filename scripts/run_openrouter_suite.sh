@@ -56,11 +56,31 @@ run_task() {
     local task_id="$1"; shift
     local gen_params="$1"; shift
 
+    # SUITE_INCLUDE / SUITE_EXCLUDE で実行するベンチマークを絞れる（拡張正規表現）．
+    # 別のプロセスで並行して実行したい場合に使う．
+    if [[ -n "${SUITE_INCLUDE:-}" ]] && ! [[ "$label" =~ $SUITE_INCLUDE ]]; then
+        return 0
+    fi
+    if [[ -n "${SUITE_EXCLUDE:-}" ]] && [[ "$label" =~ $SUITE_EXCLUDE ]]; then
+        return 0
+    fi
+
     local done_marker="$STATE_DIR/$label.done"
     if [[ -f "$done_marker" ]]; then
         log "SKIP  $label (already completed)"
         return 0
     fi
+
+    # 実行中マーカー．複数のプロセスで並行実行しても同じベンチマークを
+    # 二重に走らせないようにする（このスクリプトを複数起動できる）．
+    local running_marker="$STATE_DIR/$label.running"
+    if [[ -f "$running_marker" ]]; then
+        log "SKIP  $label (another process is running it: $(cat "$running_marker"))"
+        return 0
+    fi
+    printf 'pid=%s since=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$running_marker"
+    # このプロセスが終了したら実行中マーカーを消す．
+    trap 'rm -f "$running_marker"' RETURN
 
     local model_args="model=$MODEL_NAME,api_key=$OPENROUTER_API_KEY"
     if [[ -n "$gen_params" ]]; then
@@ -81,12 +101,14 @@ run_task() {
             "$@" >"$task_log" 2>&1; then
         local elapsed=$(( $(date +%s) - started ))
         printf '%s\n' "$task_id" >"$done_marker"
+        rm -f "$STATE_DIR/$label.failed"
         log "OK    $label (${elapsed}s)"
     else
         local elapsed=$(( $(date +%s) - started ))
         log "FAIL  $label (${elapsed}s) -- see $task_log"
         printf '%s\n' "$task_id" >"$STATE_DIR/$label.failed"
     fi
+    rm -f "$running_marker"
 }
 
 GREEDY="temperature:0.0,max_new_tokens:4096"
