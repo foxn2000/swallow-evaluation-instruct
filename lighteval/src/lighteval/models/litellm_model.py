@@ -241,6 +241,13 @@ class LiteLLMClient(LightevalModel):
         self.API_RETRY_SLEEP = 3
         self.API_RETRY_MULTIPLIER = 2
         self.CONCURENT_CALLS = int(os.getenv("LITELLM_CONCURRENT_CALLS", 20))  # 100 leads to hitting Anthropic rate limits
+        # 独自拡張：推論API呼び出し1回あたりのタイムアウト（秒）．
+        # litellm の既定値は 6000 秒（100分）と非常に長いため，プロバイダ側の応答が
+        # 極端に遅いときに1件の呼び出しが評価全体を長時間ブロックすることがある．
+        # 既定の挙動は変えず，環境変数で短くできるようにする．
+        self.REQUEST_TIMEOUT = float(
+            os.getenv("LITELLM_REQUEST_TIMEOUT", litellm.DEFAULT_REQUEST_TIMEOUT)
+        )
 
         self._tokenizer = encode
         self._warned_tokenizer_fallback = False
@@ -379,7 +386,7 @@ class LiteLLMClient(LightevalModel):
                     kwargs["max_completion_tokens"] = max_new_tokens
                 
                 request_started = time.monotonic()
-                response = litellm.completion(**kwargs, timeout=litellm.DEFAULT_REQUEST_TIMEOUT)
+                response = litellm.completion(**kwargs, timeout=self.REQUEST_TIMEOUT)
 
                 # 独自拡張：呼び出し1回ごとの情報を記録する（LITELLM_REQUEST_LOG）．
                 request_log = _request_logger()
