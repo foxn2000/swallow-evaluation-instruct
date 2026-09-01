@@ -306,16 +306,24 @@ class LiteLLMClient(LightevalModel):
         # max_n < num_samples の場合は n=1 に設定してAPIをnum_samples回呼び出す
         if max_n is not None and max_n < num_samples:
             logger.warning(f"Number of parallel generations `n` will be set to 1, and the process will repeat {num_samples} times.")
-            responses = []
-            for _ in range(num_samples):
-                resp = self._call_litellm_completion(
+            # 独自拡張：num_samples 回の呼び出しは互いに独立なので並列に実行する．
+            # 逐次実行にすると，特にマルチターンのベンチマーク（MT-Bench）で
+            # 設問ごとの処理時間が num_samples 倍になってしまう．
+            # なお __call_api_parallel() は外側の並列度を num_samples で割っている
+            # （n_concurrency = CONCURENT_CALLS / num_samples）ため，ここで
+            # num_samples 並列にしても全体の同時接続数は CONCURENT_CALLS に収まる．
+            # executor.map は入力順に結果を返すので，応答の順序は逐次実行時と同じ．
+            def _call_once(_: int):
+                return self._call_litellm_completion(
                     prompt=prompt,
                     return_logits=return_logits,
                     max_new_tokens=max_new_tokens,
                     stop_sequence=stop_sequence,
                     n=1
                 )
-                responses.append(resp)
+
+            with ThreadPoolExecutor(num_samples) as executor:
+                responses = list(executor.map(_call_once, range(num_samples)))
             return merge_model_responses(responses)
         else:
             return self._call_litellm_completion(
