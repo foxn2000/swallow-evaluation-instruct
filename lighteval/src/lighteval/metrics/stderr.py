@@ -24,8 +24,10 @@
 # We kept it because it's very fast - however, we renamed the variables
 # and added documentation
 
+import itertools
 import logging
 import math
+import os
 import random
 from typing import Callable, Optional
 
@@ -56,19 +58,31 @@ class _bootstrap_internal:
         population, seed = cur_experiment
         rnd = random.Random()
         rnd.seed(seed)
-        samplings = []
+
+        draws = tqdm(
+            [(rnd.choices(population, k=len(population)),) for _ in range(self.number_draws)],
+            total=self.number_draws,
+            desc="Sampling bootstrap iterations",
+        )
+
+        # 独自拡張：既定では並列化せず，この場で計算する．
+        #
+        # 元の実装は mp.Pool(mp.cpu_count()) でプロセスを fork していた．
+        # ブートストラップ自体は小さな配列に対する軽い計算だが，fork した
+        # 子プロセスは親のメモリ（推論APIのクライアントやデータセットを
+        # 抱えた状態で1GBを超える）を引き継ぐため，CPU数に比例して
+        # メモリ使用量が跳ね上がる．評価を複数プロセスで並行実行していると
+        # これが原因で OOM が起きる．
+        #
+        # 並列化したい場合は LIGHTEVAL_BOOTSTRAP_WORKERS で指定する．
+        workers = int(os.getenv("LIGHTEVAL_BOOTSTRAP_WORKERS", 1))
+        if workers <= 1:
+            return list(itertools.starmap(self.metric, draws))
+
         import multiprocessing as mp
 
-        with mp.Pool(mp.cpu_count()) as pool:
-            samplings = pool.starmap(
-                self.metric,
-                tqdm(
-                    [(rnd.choices(population, k=len(population)),) for _ in range(self.number_draws)],
-                    total=self.number_draws,
-                    desc="Sampling bootstrap iterations",
-                ),
-            )
-        return samplings
+        with mp.Pool(min(workers, mp.cpu_count())) as pool:
+            return pool.starmap(self.metric, draws)
 
 
 def bootstrap_stderr(metric: Callable, population: list, number_experiments: int):
