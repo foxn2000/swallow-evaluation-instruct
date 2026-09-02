@@ -78,14 +78,28 @@ remove_own_running_markers() {
 trap remove_own_running_markers EXIT
 
 remove_stale_running_markers() {
-    local marker pid
+    local marker pid spec orphan
     for marker in "$STATE_DIR"/*.running; do
         [[ -f "$marker" ]] || continue
         pid=$(sed -n 's/^pid=\([0-9]*\).*/\1/p' "$marker")
-        if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
-            log "CLEAN stale running marker $(basename "$marker") (pid $pid is gone)"
-            rm -f "$marker"
+        [[ -n "$pid" ]] || continue
+        kill -0 "$pid" 2>/dev/null && continue
+
+        # ドライバが停止している．そのドライバが起動した lighteval が
+        # 残っている場合は，結果を記録する相手がもういないので同じ
+        # ベンチマークを二重に実行することになる．先に停止させる．
+        spec=$(sed -n 's/^spec=//p' "$marker")
+        if [[ -n "$spec" ]]; then
+            for orphan in $(pgrep -f -- "$spec" 2>/dev/null); do
+                [[ "$orphan" == "$$" ]] && continue
+                grep -q 'lighteval' "/proc/$orphan/cmdline" 2>/dev/null || continue
+                grep -q -- "$OUT_DIR" "/proc/$orphan/cmdline" 2>/dev/null || continue
+                log "CLEAN orphaned lighteval pid $orphan for $(basename "$marker" .running) (its driver $pid is gone)"
+                kill "$orphan" 2>/dev/null
+            done
         fi
+        log "CLEAN stale running marker $(basename "$marker") (pid $pid is gone)"
+        rm -f "$marker"
     done
     return 0
 }
@@ -128,7 +142,9 @@ run_task_raw() {
         log "SKIP  $label (another process is running it: $(cat "$running_marker"))"
         return 0
     fi
-    printf 'pid=%s since=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$running_marker"
+    # 停止したドライバの後始末（remove_stale_running_markers）で，
+    # 取り残された lighteval プロセスを特定できるようにタスク指定も記録する．
+    printf 'pid=%s since=%s\nspec=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$task_spec" >"$running_marker"
 
     local model_args="model=$MODEL_NAME,api_key=$OPENROUTER_API_KEY"
     if [[ -n "$gen_params" ]]; then
