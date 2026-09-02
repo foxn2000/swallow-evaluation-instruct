@@ -8,8 +8,11 @@
 #   SWALLOW_EVAL_REPO       リポジトリのパス（既定：このスクリプトの親ディレクトリ）
 #   SUITE_SCRIPT            使用する suite スクリプト（既定：scripts/run_openrouter_suite.sh）
 #   SUPERVISOR_INTERVAL     確認の間隔（秒，既定60）
-#   SUPERVISOR_MAX_PROCS    lighteval プロセスの上限（既定9）
-#   SUPERVISOR_MEM_FLOOR_MB この空きメモリを下回ったら新規起動を控える（既定2200）
+#   SUPERVISOR_MAX_PROCS    lighteval プロセスの上限（既定8）
+#   SUPERVISOR_MEM_FLOOR_MB この空きメモリを下回ったら新規起動を控える（既定3200）
+#                           MT-Bench は判定処理のために lighteval 自身を4本ほど
+#                           fork するため，1プロセスあたり最大で6GB近く必要に
+#                           なることがある．上限と下限はこれを見込んだ値．
 #   SUPERVISOR_SLOTS_FILE   スロット定義ファイル．1行1スロットで
 #                           <モデルID>|<出力ディレクトリ名>|<種類(main|mmlu)>|<必要本数>|<追加生成パラメータ>
 #                           指定しない場合はスクリプト内の既定値を使う．
@@ -34,8 +37,8 @@ SNAP_NAME=$(basename "$SNAP")
 LOG=$REPO/runs/supervisor.log
 LOCK=$REPO/runs/supervisor.pid
 INTERVAL="${SUPERVISOR_INTERVAL:-60}"
-MAX_PROCS="${SUPERVISOR_MAX_PROCS:-9}"
-MEM_FLOOR_MB="${SUPERVISOR_MEM_FLOOR_MB:-2200}"
+MAX_PROCS="${SUPERVISOR_MAX_PROCS:-8}"
+MEM_FLOOR_MB="${SUPERVISOR_MEM_FLOOR_MB:-3200}"
 
 cd "$REPO" || exit 1
 
@@ -65,8 +68,8 @@ SLOTS=(
   "moonshotai/kimi-k2.6|kimi-k2.6|main|1|"
   'google/gemma-4-31b-it|gemma-4-31b-it-reasoning|main|1|reasoning_effort:"medium"'
   "deepseek/deepseek-v4-flash-0731|deepseek-v4-flash|mmlu|1|"
-  "qwen/qwen3.8-27b|qwen3.8-27b|mmlu|2|"
-  "moonshotai/kimi-k2.6|kimi-k2.6|mmlu|2|"
+  "qwen/qwen3.8-27b|qwen3.8-27b|mmlu|1|"
+  "moonshotai/kimi-k2.6|kimi-k2.6|mmlu|1|"
   'google/gemma-4-31b-it|gemma-4-31b-it-reasoning|mmlu|1|reasoning_effort:"medium"'
 )
 
