@@ -225,6 +225,58 @@ MMLU-Pro [Wang et al. (2024)](https://openreview.net/forum?id=y10DM6R2r3) の低
     * `swallow|polymath_japanese_N{4,8,16,32,64,128}` を指定することで，N回試行時のPass@KおよびMaj@Kを評価できます．この場合の推奨設定は temperature=0.6, top-p=0.95 です．
 
 
+### JFBench
+「JSON形式で出力する」「です・ます調で書く」のような検証可能な制約を指示文に付加して，日本語における指示追従性能を評価するベンチマークです．
+制約は16のグループ・174種類が用意されており，1つの設問に複数の制約を組み合わせることで難易度を段階的に変えられます．
+制約の判定は，機械的に検証できるものはルールベースで，敬体か否かなど機械的に検証できないものはLLM-as-a-Judgeで行います．
+
+* タスク分類：オープンエンド対話の指示追従
+* 出典：[Preferred Networks (2026)](https://preferred.jp/ja/blog/tech/jfbench-japanese-instruction-following-benchmark/), [実装](https://github.com/pfnet-research/jfbench)
+* lightevalタスクID：`swallow|jfbench:n1`, `swallow|jfbench:n2`, `swallow|jfbench:n4`, `swallow|jfbench:n8`（末尾の数字は1設問あたりの制約数）
+* データセット：設問は評価の実行時にプログラムで生成します（HuggingFace上のデータセットではありません）．
+  指示文にはIFBenchのテストデータの日本語訳（JFBench同梱の `ifbench_ja_translated.jsonl`）を使用します．
+* ライセンス：実装は MIT License．指示文のデータは ODC-BY 1.0．
+* 設問数：制約数ごとに200問（計800問）
+* LLM-as-a-Judge：一部の制約の判定に使用します．既定のジャッジモデルはJFBench公式と同じ `openai/gpt-oss-120b`（OpenRouter経由）です．
+* 評価尺度：制約充足率（jfbench_score）．設問の全ての制約を満たした割合．
+* その他の評価尺度
+    * 制約単位の充足率：jfbench_constraint_score
+    * 制約グループ別の充足率：jfbench_group_{グループ名}．16グループそれぞれについて，該当グループの制約の充足数を出現数で割った値．
+      そのグループの制約が出現しなかった場合は NaN になります．
+* 実装の出典：[JFBench](https://github.com/pfnet-research/jfbench) の制約ライブラリおよび設問生成器を同梱しています
+  （`lighteval/src/lighteval/tasks/swallow/jfbench/_vendor_jfbench`．同梱の経緯と変更点は同ディレクトリの `VENDORING.md` を参照）．
+  評価条件はJFBench公式の評価手順に準拠し，制約集合は `test`，乱数シードは42としています．
+* 注意
+    * 設問の生成にはJFBench公式の生成器を使うため，制約数1の場合は全ての「指示文×制約」の組（300×174通り）を列挙してから
+      200問を抽出します．この処理に1分程度かかります．
+    * 制約グループ別の充足率は，制約数が少ない設定（n1・n2）や `--max-samples` を指定した場合，出現しないグループが生じます．
+
+### AnswerCarefully
+LLMから危険な応答を誘発しうる質問を集めた，日本語の安全性評価ベンチマークです．
+「違法行為への加担」「個人情報漏洩」「誤情報による実被害」など複数のリスク領域を対象としており，
+模範的な回答（参考回答）と比較しながら，モデルの回答の安全性をLLM-as-a-Judgeで5段階評価します．
+
+* タスク分類：安全性
+* 出典：[鈴木ら (2025)](https://www.anlp.jp/proceedings/annual_meeting/2025/pdf_dir/Q2-3.pdf), [評価ツールの実装](https://github.com/llm-jp/llm-jp-judge)
+* lightevalタスクID：`swallow|answercarefully`（既定は v2.2）
+* データセット：[llm-jp/AnswerCarefully](https://huggingface.co/datasets/llm-jp/AnswerCarefully) の test スプリット
+* ライセンス：データセットのページを参照してください．
+* 設問数：336問（v2.0・v2.2），100問（v3.0）
+* LLM-as-a-Judge：使用します．
+* 評価尺度：安全性スコア（safety_score）．1〜5の5段階評価の平均．
+* その他の評価尺度
+    * 違反回答率（%）：violation_rate．安全性スコアが3未満の割合．
+    * 許容回答率（%）：acceptable_rate．安全性スコアが3より大きい割合．
+* 派生版
+    * バージョンごとに `swallow|answercarefully_v20`，`swallow|answercarefully_v22`，`swallow|answercarefully_v30` があります．
+      v3.0 は参考回答のカラム名が `output` から `output-sample` に変更されていますが，実装は両方に対応しています．
+* 実装の出典：採点手順は [llm-jp-judge](https://github.com/llm-jp/llm-jp-judge) の `safety_ja` プロトコルに準拠しています．
+  ジャッジプロンプト・評価値の抽出方法・違反回答率および許容回答率の定義は同ツールと同一です．
+  ジャッジのAPI呼び出しが失敗した場合は，llm-jp-judge の `api_error_score` の既定値にならって安全性スコアを1として扱います
+  （危険な入力に対してジャッジ側のガードレールが作動している可能性があるため）．
+* 注意：**llm-jp/AnswerCarefully は利用申請が必要なデータセット（gated dataset）です．**
+  評価を実行する前にHuggingFace上で利用条件に同意し，`hf auth login` でトークンを設定してください．
+
 ## 英語のベンチマーク
 
 ### HellaSwag
@@ -406,3 +458,40 @@ AIMEは主に米国高校生を対象とする試験で，代数・幾何・数�
 * 実装の出典：[lighteval v0.11.0](https://github.com/huggingface/lighteval/tree/v0.11.0) の標準実装をもとに，正誤判定関数のバグ修正（ `count_stopwords` の追加，`Pronoun{Length,Count}Checker` の修正）を行いました．  
   また，出力トークン数制限を解除しています．  
 * 注意：シングルターンの設問のみに対応しています．マルチターンの設問には対応しておりません．
+
+### BFCL v4（非Agent部分）
+関数（ツール）呼び出しの正確さを評価するベンチマークです．与えられた関数定義と設問に対してモデルが出力した関数呼び出しを
+抽象構文木（AST）として解析し，関数名・引数名・引数の型・引数の値を正解と照合します．
+また，与えられた関数では答えられない設問に対して関数呼び出しを出力しないこと（irrelevance）と，
+答えられる設問に対しては出力すること（relevance）も評価します．
+
+* タスク分類：関数（ツール）呼び出し
+* 出典：[Patil et al. (2025)](https://proceedings.mlr.press/v267/patil25a.html), [実装](https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard)
+* lightevalタスクID：`swallow|bfcl_v4:{カテゴリ名}`．カテゴリは以下の13種類です．
+    * Non-live（専門家が作成）：`simple_python`（400問），`simple_java`（100問），`simple_javascript`（50問），
+      `multiple`（200問），`parallel`（200問），`parallel_multiple`（200問），`irrelevance`（240問）
+    * Live（ユーザ投稿）：`live_simple`（258問），`live_multiple`（1,053問），`live_parallel`（16問），
+      `live_parallel_multiple`（24問），`live_irrelevance`（884問），`live_relevance`（16問）
+* データセット：[gorillaリポジトリ](https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard/bfcl_eval/data)
+  （HuggingFace上の `gorilla-llm/Berkeley-Function-Calling-Leaderboard` はv3までのため，GitHubから取得します）
+* ライセンス：Apache License 2.0
+* 設問数：計3,641問
+* 評価尺度：正解率（bfcl_accuracy）
+* 実装の出典：BFCLのASTチェッカーおよび prompting モードのプロンプト生成処理を同梱しています
+  （`lighteval/src/lighteval/tasks/swallow/bfcl/_vendor_bfcl`．同梱の経緯と変更点は同ディレクトリの `README.md` を参照）．
+* 対象外のカテゴリとその理由
+    * `memory_*`，`web_search_*`：BFCL v4 が `agentic` に分類しているカテゴリで，メモリバックエンドや検索エンジンとの
+      多段のやりとりを必要とするため．
+    * `multi_turn_*`：`agentic` グループには含まれませんが，採点にはモデルが出力した関数を模擬APIに対して実行し，
+      その状態遷移を検証する必要があるため，実質的にAgent的な実行環境を要します．
+    * `format_sensitivity`：リーダーボードのスコアに算入されない補助的なカテゴリのため．
+* 注意
+    * 本実装は推論APIに `tools` パラメータを渡す Function Calling モードではなく，システムメッセージで出力形式を指示する
+      **prompting モード**で評価します（BFCLのリーダーボードにおける "(Prompt)" 表記のモデルに相当します）．
+      したがって Function Calling モードのスコアとは直接比較できません．
+    * lightevalの仕様上，BFCLのシステムメッセージはユーザ発話の先頭に連結されます
+      （`--system-prompt` を併用した場合はシステムメッセージ側に置かれます）．BFCL公式実装はシステムメッセージとして
+      与えるため，この点でプロンプトの構成が異なります．
+    * テストデータはGitHubからダウンロードして `~/.cache/swallow-evaluation-instruct/` 以下にキャッシュします．
+      GitHubに接続できない環境では，`bfcl_eval/data` 相当のディレクトリを用意して環境変数 `BFCL_V4_DATA_DIR` に指定してください．
+    * `simple_java` および `simple_javascript` の採点には tree-sitter を使用します．

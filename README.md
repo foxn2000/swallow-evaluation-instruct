@@ -20,6 +20,7 @@ swallow-evaluation-instruct は，HuggingFace社が開発した評価フレー�
   - [4. パスの追加](#4-パスの追加)
 - [実行方法](#実行方法)
   - [1. OpenAI互換の推論APIを提供するモデルの評価](#1-openai互換の推論apiを提供するモデルの評価)
+    - [1.1. OpenRouter のモデルの評価](#11-openrouter-のモデルの評価)
   - [2. オープンモデルを自身の計算環境で評価](#2-オープンモデルを自身の計算環境で評価)
     - [\[推奨\] 2.1. vLLMでホスティング -\> LiteLLMバックエンドで実行](#推奨-21-vllmでホスティング---litellmバックエンドで実行)
     - [\[非推奨\] 2.2. lightevalからvLLMを直接起動する](#非推奨-22-lightevalからvllmを直接起動する)
@@ -27,6 +28,7 @@ swallow-evaluation-instruct は，HuggingFace社が開発した評価フレー�
   - [4. 評価結果の出力先](#4-評価結果の出力先)
 - [詳細な設定](#詳細な設定)
   - [環境変数](#環境変数)
+  - [LLM-as-a-Judge に使うモデルの指定](#llm-as-a-judge-に使うモデルの指定)
   - [lighteval 実行時引数](#lighteval-実行時引数)
     - [`[OPTIONS]`](#options)
     - [`MODEL_ARGS` - base\_params](#model_args---base_params)
@@ -130,6 +132,49 @@ MODEL_ARGSのかわりにYAML設定ファイルのパスを指定できます．
 TASK_ID はベンチマークの識別子です．swallow-evaluation-instruct ではlighteval公式実装に加えて，Swallowチームが実装したベンチマークを指定できます．詳細は [Swallowチームが実装したベンチマーク一覧](./BENCHMARKS.md) を参照してください．
 
 OpenAI互換の推論APIを提供するDeepInfraやGoogle AI Studioなどのプロバイダ（[LiteLLM Supported Providers](https://docs.litellm.ai/docs/providers)）についても同様のコマンドで評価できます．ただし，プロバイダやモデルによってはエラーが起きる場合があります（[Tips](./TIPS.md)参照）．
+
+### 1.1. OpenRouter のモデルの評価
+
+[OpenRouter](https://openrouter.ai/) はOpenAI互換の推論APIを通じて多数のモデルを提供しているため，同じ方式で評価できます．
+`model` パラメータには `openrouter/{プロバイダ名}/{モデルID}` を指定してください．
+
+OpenRouter のモデルは評価対象モデルとしてもLLM-as-a-Judgeとしても使用できます．
+以下は，評価対象モデルに `google/gemma-4-31b-it`，ジャッジモデルに `openai/gpt-5.4-mini` を使って日本語MT-Benchを評価する例です．
+同等のシェルスクリプトを [./scripts/examples/4_openrouter.sh](./scripts/examples/4_openrouter.sh) に置いています．
+
+```sh
+MODEL_NAME="openrouter/google/gemma-4-31b-it"
+TASK_ID="swallow|japanese_mt_bench"
+
+export OPENROUTER_API_KEY="{OpenRouterのAPI Key}"
+
+# LLM-as-a-Judge に OpenRouter のモデルを使う設定
+export JUDGE_BASE_URL="https://openrouter.ai/api/v1"
+export JUDGE_API_KEY="$OPENROUTER_API_KEY"
+export JUDGE_MODEL_NAME="openai/gpt-5.4-mini"
+
+uv run --isolated --locked --extra lighteval_api \
+    lighteval endpoint litellm \
+        "model=$MODEL_NAME,api_key=$OPENROUTER_API_KEY,generation_parameters={temperature:0.0,max_new_tokens:4096}" \
+        "${TASK_ID}|0|0" \
+        --use-chat-template \
+        --output-dir ./lighteval/outputs \
+        --save-details
+```
+
+推論APIのモデルのみを評価する場合は，vLLMを含まない軽量なextra `lighteval_api` を使えます．
+GPUが不要になり，インストール時間とディスク使用量を大幅に削減できます．
+
+**OpenRouter を使う場合の注意点**
+
+* OpenRouter は Chat Completion API の `n` パラメータ（1回の呼び出しで生成する応答数）に対応していません．
+  そのため本フレームワークは，プロバイダ名が `openrouter` の場合に `max_n=1` を自動的に設定し，
+  複数回の試行が必要なベンチマーク（MT-Bench，Pass@K・Maj@Kの派生版など）ではAPIを試行回数だけ繰り返し呼び出します．
+  明示的に `max_n` を指定した場合はその値が尊重されます．
+* モデルによっては `temperature` などの生成パラメータを受け付けません．
+  OpenAIの推論型モデル（o系列・gpt-5系列）をOpenRouter経由で評価する場合は，本フレームワークが自動的にこれらを除外します．
+* 課金はOpenRouterのアカウントに対して行われます．試行回数の多いベンチマークは呼び出し回数が多くなるため，
+  `--max-samples` で動作確認をしてから本番の評価を実行することをおすすめします．
 
 ### 2. オープンモデルを自身の計算環境で評価
 
@@ -310,6 +355,33 @@ lighteval endpoint litellm \
 
 * `OPENAI_API_KEY`：MT-Bench(日英) で LLM-as-a-judge として OpenAI のモデルを呼び出すために使用します．  
 * `LITELLM_CONCURRENT_CALLS`：LiteLLMが推論APIを呼ぶときの最大並列数．大きくすると処理速度は向上するかもしれませんが，推論APIの挙動が不安定になることもあります．  
+* `JUDGE_MODEL_NAME`（独自）：LLM-as-a-Judge に使うモデル名．ベンチマーク側の既定値を上書きします．
+* `JUDGE_BASE_URL`（独自）：LLM-as-a-Judge に使う推論APIのURL．
+* `JUDGE_API_KEY`（独自）：LLM-as-a-Judge に使う推論APIのAPIキー．
+* `JUDGE_REASONING_EFFORT`（独自）：LLM-as-a-Judge の推論の深さ．`none` を指定すると「推論を無効化する」という値としてAPIに渡します．パラメータ自体を送らせたくない場合は `unset` を指定してください．
+* `JUDGE_CONCURRENT_CALLS`（独自）：LLM-as-a-Judge が推論APIを呼ぶときの最大並列数．既定値は10．
+* `OPENROUTER_API_KEY`（独自）：OpenRouter のAPIキー．`JUDGE_BASE_URL` が未設定でこの環境変数のみが設定されている場合は，LLM-as-a-Judge の呼び出し先をOpenRouterとみなします．
+* `BFCL_V4_DATA_DIR`（独自）：BFCL v4 のテストデータのディレクトリ．GitHubに接続できない環境で使用します．
+* `SWALLOW_EVAL_CACHE_DIR`（独自）：HuggingFace Hub 以外から取得するデータのキャッシュ先．既定値は `~/.cache/swallow-evaluation-instruct`．
+* `JFBENCH_MAX_CONCURRENCY`（独自）：JFBench で設問を同時に評価する数．既定値は16．
+* `LITELLM_REQUEST_TIMEOUT`（独自）：推論API呼び出し1回あたりのタイムアウト（秒）．既定値は litellm の既定値（6000秒）です．プロバイダ側の応答が極端に遅い場合，1件の呼び出しが評価全体を長時間ブロックすることがあるため，短く設定できるようにしています．ただし短くしすぎるとタイムアウトによる再試行や空応答が増え，スコアに影響する点に注意してください．
+* `LITELLM_REQUEST_LOG`（独自）：推論APIの呼び出し1回ごとの情報（トークン数・課金額・応答時間・終了理由）を JSON Lines で記録するファイルのパス．評価結果の分析や実行コストの見積もりに使えます．指定しない場合は記録しません．
+
+### LLM-as-a-Judge に使うモデルの指定
+
+MT-Bench（日英）・AnswerCarefully・JFBench は，モデルの応答の採点にLLM-as-a-Judgeを使用します．
+ジャッジに使うモデルはベンチマークごとに既定値が定められていますが，上記の環境変数で上書きできます．
+これにより，OpenAI以外のプロバイダ（OpenRouterなど）が提供するモデルもジャッジに使えます．
+
+```sh
+# 例：OpenRouter 経由で openai/gpt-5.4-mini をジャッジに使う
+export JUDGE_BASE_URL="https://openrouter.ai/api/v1"
+export JUDGE_API_KEY="{OpenRouterのAPI Key}"
+export JUDGE_MODEL_NAME="openai/gpt-5.4-mini"
+```
+
+環境変数を設定しない場合は，従来どおりベンチマーク側で宣言されたOpenAIのモデルが `OPENAI_API_KEY` を使って呼び出されます．
+**ジャッジモデルを変更するとスコアは変わります．** 異なるジャッジで評価した結果は互いに比較できないことに注意してください．
 
 ### lighteval 実行時引数
 

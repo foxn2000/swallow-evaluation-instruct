@@ -48,11 +48,18 @@ from lighteval.tasks.requests import (
 )
 from lighteval.utils.imports import is_vllm_available
 from lighteval.utils.utils import EnvConfig, as_list
-from lighteval.models.vllm.utils import run_reasoning_extraction
 
 
 logger = logging.getLogger(__name__)
 
+
+# 独自拡張：`lighteval.models.vllm.utils` は vLLM に依存しているため，
+# モジュールの読み込み時にimportすると vLLM を含まない環境で
+# `lighteval.models.model_loader` 自体がimportできなくなる
+# （model_loader は本モジュールを無条件にimportしている）．
+# vLLM を実際に使うときだけ読み込む．
+if is_vllm_available():
+    from lighteval.models.vllm.utils import run_reasoning_extraction
 
 if is_vllm_available():
     import ray

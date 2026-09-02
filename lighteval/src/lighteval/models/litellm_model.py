@@ -21,12 +21,15 @@
 # SOFTWARE.
 
 import os
+import json
 import logging
+import threading
 import time
 import math
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Optional, List
 
 import yaml
@@ -51,9 +54,97 @@ from lighteval.tasks.requests import (
 )
 from lighteval.utils.imports import is_litellm_available
 from lighteval.models.utils import replace_none_content_with_reasoning_content
-from lighteval.models.vllm.utils import run_reasoning_extraction
 
 logger = logging.getLogger(__name__)
+
+# 独自拡張：OpenRouter は Chat Completion API の n パラメータ（1回の呼び出しで
+# 生成する応答数）に対応しておらず，n>1 を指定しても応答が1つしか返らない．
+# 気付かないうちにサンプル数が減ってスコアが変わることを防ぐため，
+# OpenRouter を使う場合は max_n=1 を既定とし，num_samples 回に分けてAPIを呼ぶ．
+PROVIDERS_WITHOUT_MULTI_SAMPLE_SUPPORT = ("openrouter",)
+
+# temperature / top_p / stop を受け付けない推論型モデル（OpenAI系）．
+# OpenRouter 経由で呼ぶ場合はモデル名が "openrouter/openai/gpt-5.4-mini" のように
+# なるため，プロバイダ名を取り除いた上で判定する．
+OPENAI_RESTRICTED_SAMPLING_MODEL_MARKERS = ("o1", "o3", "o4", "gpt-5")
+
+
+class _RequestLogger:
+    """推論APIの呼び出し1回ごとの情報を JSON Lines で記録する（独自拡張）．
+
+    環境変数 `LITELLM_REQUEST_LOG` にファイルパスを指定すると有効になる．
+    トークン数・課金額・応答時間・終了理由を記録するので，評価結果の分析や
+    実行コストの見積もりに使える．評価スコアには影響しない．
+
+    lighteval は推論APIをスレッドプールで並列に呼ぶため，書き込みはロックで
+    直列化する．
+    """
+
+    def __init__(self, path: str) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+        self._warned = False
+
+    def log(self, record: dict) -> None:
+        try:
+            line = json.dumps(record, ensure_ascii=False, default=str)
+            with self._lock, open(self._path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception as e:  # noqa: BLE001 - ログの失敗で評価を止めない
+            if not self._warned:
+                logger.warning(f"Could not write to LITELLM_REQUEST_LOG: {type(e).__name__}: {e}")
+                self._warned = True
+
+
+@lru_cache(maxsize=1)
+def _request_logger() -> Optional[_RequestLogger]:
+    path = os.getenv("LITELLM_REQUEST_LOG")
+    if not path:
+        return None
+    logger.info(f"Logging one JSON object per inference API call to {path}")
+    return _RequestLogger(path)
+
+
+def _usage_as_dict(response) -> dict:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return {}
+    if hasattr(usage, "model_dump"):
+        try:
+            return usage.model_dump()
+        except Exception:  # noqa: BLE001
+            pass
+    if isinstance(usage, dict):
+        return dict(usage)
+    return {}
+
+
+def _model_id_without_provider(model: str) -> str:
+    """litellm のモデル名からプロバイダ名の接頭辞を取り除く．
+
+    例： "openrouter/openai/gpt-5.4-mini" -> "gpt-5.4-mini"
+         "openai/o3-2025-04-16" -> "o3-2025-04-16"
+    """
+    return model.rsplit("/", maxsplit=1)[-1]
+
+
+def _load_run_reasoning_extraction():
+    """lighteval内で適用する reasoning parser を遅延importする．
+
+    独自拡張：`lighteval.models.vllm.utils` は vLLM に依存しているため，
+    モジュールの読み込み時にimportすると vLLM を含まない環境
+    （推論APIのモデルのみを評価する場合など）で LiteLLM バックエンドが
+    使えなくなってしまう．reasoning_parser を指定したときにだけ読み込む．
+    """
+    try:
+        from lighteval.models.vllm.utils import run_reasoning_extraction
+    except ImportError as e:
+        raise ImportError(
+            "MODEL_ARGS の reasoning_parser を使うには vLLM が必要です．"
+            "`--extra lighteval` でインストールした環境で実行するか，"
+            "vLLM serve 側の --reasoning-parser を使用してください．"
+        ) from e
+    return run_reasoning_extraction
 
 if is_litellm_available():
     import litellm
@@ -150,14 +241,51 @@ class LiteLLMClient(LightevalModel):
         self.API_RETRY_SLEEP = 3
         self.API_RETRY_MULTIPLIER = 2
         self.CONCURENT_CALLS = int(os.getenv("LITELLM_CONCURRENT_CALLS", 20))  # 100 leads to hitting Anthropic rate limits
+        # 独自拡張：推論API呼び出し1回あたりのタイムアウト（秒）．
+        # litellm の既定値は 6000 秒（100分）と非常に長いため，プロバイダ側の応答が
+        # 極端に遅いときに1件の呼び出しが評価全体を長時間ブロックすることがある．
+        # 既定の挙動は変えず，環境変数で短くできるようにする．
+        self.REQUEST_TIMEOUT = float(
+            os.getenv("LITELLM_REQUEST_TIMEOUT", litellm.DEFAULT_REQUEST_TIMEOUT)
+        )
 
         self._tokenizer = encode
+        self._warned_tokenizer_fallback = False
         self.pairwise_tokenization = False
         litellm.drop_params = True
         litellm.set_verbose = False
+        # 独自拡張：litellm は自身のモデル一覧に存在しないモデル（OpenRouter に
+        # 追加された新しいモデルなど）を扱うたびに，プロバイダ一覧の案内文を
+        # 標準エラー出力に書き出す．評価1件ごとに出力されて実行ログが読みづらく
+        # なるため抑制する．
+        litellm.suppress_debug_info = True
         
         if self.reasoning_parser is not None:
             logger.warning(f"In-house reasoning_parser={self.reasoning_parser} is set. Please make sure vLLM reasoning_parser is not set. Use a custom parser only for models not supported by the vLLM built-in parser.")
+
+        # 独自拡張：n>1 に対応しないプロバイダでは max_n=1 を既定にする．
+        # 明示的に max_n が指定されている場合は尊重する．
+        if (
+            self.provider in PROVIDERS_WITHOUT_MULTI_SAMPLE_SUPPORT
+            and getattr(self.generation_parameters, "max_n", None) is None
+        ):
+            self.generation_parameters.max_n = 1
+            logger.warning(
+                f"Provider '{self.provider}' does not support generating multiple responses "
+                "in a single request (the `n` parameter). Setting max_n=1; requests for "
+                "multiple samples will be issued one at a time."
+            )
+
+    def _has_restricted_sampling_params(self) -> bool:
+        """temperature / top_p / stop を受け付けないモデルかどうかを判定する．
+
+        独自拡張：従来は provider が "openai" の場合のみ判定していたが，
+        OpenRouter 経由でOpenAIの推論型モデルを呼ぶ場合にも適用されるようにした．
+        """
+        if self.provider not in ("openai", "openrouter"):
+            return False
+        model_id = _model_id_without_provider(self.model)
+        return any(marker in model_id for marker in OPENAI_RESTRICTED_SAMPLING_MODEL_MARKERS)
 
     def _prepare_stop_sequence(self, stop_sequence):
         """Prepare and validate stop sequence."""
@@ -185,16 +313,24 @@ class LiteLLMClient(LightevalModel):
         # max_n < num_samples の場合は n=1 に設定してAPIをnum_samples回呼び出す
         if max_n is not None and max_n < num_samples:
             logger.warning(f"Number of parallel generations `n` will be set to 1, and the process will repeat {num_samples} times.")
-            responses = []
-            for _ in range(num_samples):
-                resp = self._call_litellm_completion(
+            # 独自拡張：num_samples 回の呼び出しは互いに独立なので並列に実行する．
+            # 逐次実行にすると，特にマルチターンのベンチマーク（MT-Bench）で
+            # 設問ごとの処理時間が num_samples 倍になってしまう．
+            # なお __call_api_parallel() は外側の並列度を num_samples で割っている
+            # （n_concurrency = CONCURENT_CALLS / num_samples）ため，ここで
+            # num_samples 並列にしても全体の同時接続数は CONCURENT_CALLS に収まる．
+            # executor.map は入力順に結果を返すので，応答の順序は逐次実行時と同じ．
+            def _call_once(_: int):
+                return self._call_litellm_completion(
                     prompt=prompt,
                     return_logits=return_logits,
                     max_new_tokens=max_new_tokens,
                     stop_sequence=stop_sequence,
                     n=1
                 )
-                responses.append(resp)
+
+            with ThreadPoolExecutor(num_samples) as executor:
+                responses = list(executor.map(_call_once, range(num_samples)))
             return merge_model_responses(responses)
         else:
             return self._call_litellm_completion(
@@ -227,7 +363,7 @@ class LiteLLMClient(LightevalModel):
                     "caching": False,
                     "api_key": self.api_key,
                 }
-                if self.provider == "openai" and ("o1" in self.model or "o3" in self.model or "o4" in self.model or "gpt-5" in self.model):
+                if self._has_restricted_sampling_params():
                     logger.warning("O* models and gpt-5 do not support temperature, top_p, stop sequence. Disabling.")
                 else:
                     kwargs.update(self.generation_parameters.to_litellm_dict())
@@ -249,14 +385,36 @@ class LiteLLMClient(LightevalModel):
                 if kwargs.get("max_completion_tokens", None) is None:
                     kwargs["max_completion_tokens"] = max_new_tokens
                 
-                response = litellm.completion(**kwargs, timeout=litellm.DEFAULT_REQUEST_TIMEOUT)
+                request_started = time.monotonic()
+                response = litellm.completion(**kwargs, timeout=self.REQUEST_TIMEOUT)
+
+                # 独自拡張：呼び出し1回ごとの情報を記録する（LITELLM_REQUEST_LOG）．
+                request_log = _request_logger()
+                if request_log is not None:
+                    request_log.log(
+                        {
+                            "timestamp": time.time(),
+                            "model": self.model,
+                            "n": n,
+                            "latency_seconds": round(time.monotonic() - request_started, 3),
+                            "max_completion_tokens": kwargs.get("max_completion_tokens"),
+                            "temperature": kwargs.get("temperature"),
+                            "top_p": kwargs.get("top_p"),
+                            "usage": _usage_as_dict(response),
+                            "finish_reasons": [
+                                getattr(choice, "finish_reason", None)
+                                for choice in getattr(response, "choices", []) or []
+                            ],
+                            "num_prompt_messages": len(prompt) if isinstance(prompt, list) else None,
+                        }
+                    )
 
                 # If response content is null, replace with empty string
                 if response is not None:
                     for choice in response.choices:
                         # reasoning_parser が指定されていれば reasoning_content, content に分離
                         if self.reasoning_parser is not None:
-                            reasoning_content, parsed_content = run_reasoning_extraction(
+                            reasoning_content, parsed_content = _load_run_reasoning_extraction()(
                                 model_output=choice.message.content,
                                 reasoning_parser=self.reasoning_parser,
                                 replace_none_content_with_reasoning_content=True
@@ -466,7 +624,21 @@ class LiteLLMClient(LightevalModel):
         return self._tokenizer
 
     def _encode(self, text: str):
-        enc = encode(model=self.model, text=text)
+        # 独自拡張：litellm が未知のモデル（OpenRouter に追加された新しいモデルなど）
+        # のトークナイザを解決できない場合でも評価を続行できるようにする．
+        # tokenized_context はプロンプトの長さでソートするためだけに使われるので，
+        # 概算のフォールバックで支障はない．
+        try:
+            enc = encode(model=self.model, text=text)
+        except Exception as e:
+            if not self._warned_tokenizer_fallback:
+                logger.warning(
+                    f"Could not resolve a tokenizer for model '{self.model}' ({type(e).__name__}: {e}). "
+                    "Falling back to a character-based length estimate; this only affects the "
+                    "order in which requests are batched, not the generated text."
+                )
+                self._warned_tokenizer_fallback = True
+            return list(text.encode("utf-8"))
         if hasattr(enc, "ids"):
             return enc.ids
         return enc
