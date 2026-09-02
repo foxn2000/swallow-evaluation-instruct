@@ -101,7 +101,20 @@ kind_complete() {
 }
 
 available_mb() { awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo; }
-n_lighteval() { pgrep -fc 'lighteval endpoint litellm' 2>/dev/null || printf 0; }
+# ドライバが起動した lighteval の本数．
+# lighteval は判定処理やデータセット取得のために自身を fork するため，
+# pgrep でそのまま数えると本数が実際の数倍になり，起動枠の判定を誤る．
+# 親が lighteval でないもの（＝ドライバ直下のもの）だけを数える．
+n_lighteval() {
+    local pid ppid n=0
+    for pid in $(pgrep -f 'lighteval endpoint litellm' 2>/dev/null); do
+        ppid=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null) || continue
+        [[ -n "$ppid" ]] || continue
+        grep -q 'lighteval' "/proc/$ppid/cmdline" 2>/dev/null && continue
+        n=$(( n + 1 ))
+    done
+    printf '%s' "$n"
+}
 
 start_slot() {
     local model="$1" out_name="$2" kind="$3" extra="$4" tag="$5"
