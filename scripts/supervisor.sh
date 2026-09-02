@@ -13,6 +13,7 @@
 #                           MT-Bench は判定処理のために lighteval 自身を4本ほど
 #                           fork するため，1プロセスあたり最大で6GB近く必要に
 #                           なることがある．上限と下限はこれを見込んだ値．
+#   SUPERVISOR_RESTART_COOLDOWN 同じ担当分を再起動するまでの最短間隔（秒，既定600）
 #   SUPERVISOR_STALL_TIMEOUT ログがこの秒数更新されないベンチマークを停止する（既定2700）
 #   SUPERVISOR_SLOTS_FILE   スロット定義ファイル．1行1スロットで
 #                           <モデルID>|<出力ディレクトリ名>|<種類(main|mmlu)>|<必要本数>|<追加生成パラメータ>
@@ -71,10 +72,10 @@ SLOTS=(
   "qwen/qwen3.8-27b|qwen3.8-27b|main|1|"
   "moonshotai/kimi-k2.6|kimi-k2.6|main|1|"
   'google/gemma-4-31b-it|gemma-4-31b-it-reasoning|main|1|reasoning_effort:"medium"'
-  "deepseek/deepseek-v4-flash-0731|deepseek-v4-flash|mmlu|2|"
-  "qwen/qwen3.8-27b|qwen3.8-27b|mmlu|2|"
-  "moonshotai/kimi-k2.6|kimi-k2.6|mmlu|2|"
-  'google/gemma-4-31b-it|gemma-4-31b-it-reasoning|mmlu|2|reasoning_effort:"medium"'
+  "deepseek/deepseek-v4-flash-0731|deepseek-v4-flash|mmlu|1|"
+  "qwen/qwen3.8-27b|qwen3.8-27b|mmlu|1|"
+  "moonshotai/kimi-k2.6|kimi-k2.6|mmlu|1|"
+  'google/gemma-4-31b-it|gemma-4-31b-it-reasoning|mmlu|1|reasoning_effort:"medium"'
 )
 
 # スロット定義を外部ファイルで上書きできるようにする（空行と # から始まる行は無視）．
@@ -176,6 +177,14 @@ kill_stalled_tasks() {
     return 0
 }
 
+# 同じ担当分を短時間に何度も起動し直さないためのクールダウン．
+# 残りのベンチマークが他のプロセスに押さえられていると，起動した
+# ドライバは何もせずすぐ終了する．完了マーカーも（他が実行中のため）
+# 作られないので，そのまま何度も起動し直してしまい，起動のたびに
+# lighteval の読み込みでメモリとCPUを浪費する．
+RESTART_COOLDOWN="${SUPERVISOR_RESTART_COOLDOWN:-600}"
+declare -A LAST_START
+
 log "===== supervisor start (pid $$, interval ${INTERVAL}s, max_procs $MAX_PROCS, mem_floor ${MEM_FLOOR_MB}MB) ====="
 
 while true; do
@@ -196,6 +205,15 @@ while true; do
             log "HOLD  $out_name/$kind (available ${mem}MB < ${MEM_FLOOR_MB}MB, have=$have want=$want)"
             continue
         fi
+
+        # 直前に起動したばかりの担当分は間を空ける．
+        slot_key="$out_name/$kind/$(( have + 1 ))"
+        last=${LAST_START[$slot_key]:-0}
+        now_s=$(date +%s)
+        if (( now_s - last < RESTART_COOLDOWN )); then
+            continue
+        fi
+        LAST_START[$slot_key]=$now_s
 
         log "RECOVER $out_name/$kind (have=$have want=$want procs=$procs mem=${mem}MB)"
         start_slot "$model" "$out_name" "$kind" "$extra" "${kind}$(( have + 1 ))"
