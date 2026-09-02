@@ -289,13 +289,38 @@ unset _mmlu_subsets
 
 log "===== suite done ====="
 _n_done=$(ls -1 "$STATE_DIR"/*.done 2>/dev/null | wc -l)
-_n_failed=$(ls -1 "$STATE_DIR"/*.failed 2>/dev/null | wc -l)
-_n_running=$(ls -1 "$STATE_DIR"/*.running 2>/dev/null | wc -l)
-log "completed: $_n_done, failed: $_n_failed"
+
+# 完了マーカーの判定は，このプロセスの担当範囲（SUITE_INCLUDE / SUITE_EXCLUDE）
+# に含まれるラベルだけを見る．担当外のベンチマークが失敗していたり実行中で
+# あっても，この担当分は完了している．
+_in_scope() {
+    local label="$1"
+    if [[ -n "${SUITE_INCLUDE:-}" ]] && ! [[ "$label" =~ $SUITE_INCLUDE ]]; then
+        return 1
+    fi
+    if [[ -n "${SUITE_EXCLUDE:-}" ]] && [[ "$label" =~ $SUITE_EXCLUDE ]]; then
+        return 1
+    fi
+    return 0
+}
+
+_count_in_scope() {
+    local suffix="$1" marker label n=0
+    for marker in "$STATE_DIR"/*."$suffix"; do
+        [[ -f "$marker" ]] || continue
+        label=$(basename "$marker" ".$suffix")
+        _in_scope "$label" && n=$(( n + 1 ))
+    done
+    printf '%s' "$n"
+}
+
+_n_failed=$(_count_in_scope failed)
+_n_running=$(_count_in_scope running)
+log "completed: $_n_done, failed(担当範囲): $_n_failed"
 
 # 監視プロセス（supervisor.sh）向けの完了マーカー．
-# 失敗が残っている場合や，他のプロセスがまだ実行中のベンチマークがある場合は
-# 作らない．そうすることで，監視プロセスがこの担当分を再開してくれる．
+# 担当範囲に失敗が残っている場合や，他のプロセスがまだ実行中のベンチマークが
+# ある場合は作らない．そうすることで，監視プロセスがこの担当分を再開してくれる．
 if [[ "$_n_failed" -eq 0 && "$_n_running" -eq 0 ]]; then
     printf 'done=%s at=%s\n' "$_n_done" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         >"$STATE_DIR/.complete.${SUITE_PART:-all}"
