@@ -272,4 +272,19 @@ fi
 unset _mmlu_subsets
 
 log "===== suite done ====="
-log "completed: $(ls -1 "$STATE_DIR"/*.done 2>/dev/null | wc -l), failed: $(ls -1 "$STATE_DIR"/*.failed 2>/dev/null | wc -l)"
+_n_done=$(ls -1 "$STATE_DIR"/*.done 2>/dev/null | wc -l)
+_n_failed=$(ls -1 "$STATE_DIR"/*.failed 2>/dev/null | wc -l)
+_n_running=$(ls -1 "$STATE_DIR"/*.running 2>/dev/null | wc -l)
+log "completed: $_n_done, failed: $_n_failed"
+
+# 監視プロセス（supervisor.sh）向けの完了マーカー．
+# 失敗が残っている場合や，他のプロセスがまだ実行中のベンチマークがある場合は
+# 作らない．そうすることで，監視プロセスがこの担当分を再開してくれる．
+if [[ "$_n_failed" -eq 0 && "$_n_running" -eq 0 ]]; then
+    printf 'done=%s at=%s\n' "$_n_done" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        >"$STATE_DIR/.complete.${SUITE_PART:-all}"
+    log "COMPLETE marker written for part=${SUITE_PART:-all}"
+else
+    log "INFO  not marking part=${SUITE_PART:-all} complete (failed=$_n_failed running=$_n_running)"
+fi
+unset _n_done _n_failed _n_running
