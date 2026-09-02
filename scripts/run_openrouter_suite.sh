@@ -50,6 +50,33 @@ log() {
     printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$SUITE_LOG"
 }
 
+# 実行中マーカーの後始末．
+# このプロセスのマーカーは終了時に消し，起動時には既に終了したプロセスの
+# マーカー（異常終了で残ったもの）も消す．
+remove_own_running_markers() {
+    local marker
+    for marker in "$STATE_DIR"/*.running; do
+        [[ -f "$marker" ]] || continue
+        grep -q "^pid=$$ " "$marker" 2>/dev/null && rm -f "$marker"
+    done
+    return 0
+}
+trap remove_own_running_markers EXIT
+
+remove_stale_running_markers() {
+    local marker pid
+    for marker in "$STATE_DIR"/*.running; do
+        [[ -f "$marker" ]] || continue
+        pid=$(sed -n 's/^pid=\([0-9]*\).*/\1/p' "$marker")
+        if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+            log "CLEAN stale running marker $(basename "$marker") (pid $pid is gone)"
+            rm -f "$marker"
+        fi
+    done
+    return 0
+}
+remove_stale_running_markers
+
 # run_task <ラベル> <タスクID> <生成パラメータ> [追加の実行時引数...]
 # タスクIDには few-shot 数の指定（|0|0）を自動で付ける．
 run_task() {
@@ -88,8 +115,6 @@ run_task_raw() {
         return 0
     fi
     printf 'pid=%s since=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$running_marker"
-    # このプロセスが終了したら実行中マーカーを消す．
-    trap 'rm -f "$running_marker"' RETURN
 
     local model_args="model=$MODEL_NAME,api_key=$OPENROUTER_API_KEY"
     if [[ -n "$gen_params" ]]; then
