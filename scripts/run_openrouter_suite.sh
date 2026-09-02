@@ -13,6 +13,20 @@
 #   * JHumanEval：temperature=0.2, top_p=0.95
 #   * LiveCodeBench, AIME：temperature=0.6, top_p=0.95
 #   * MT-Bench：カテゴリごとに定められた temperature が自動適用されるため指定しない
+#
+# 主な環境変数：
+#   MODEL_NAME        評価対象モデル（既定：openrouter/google/gemma-4-31b-it）
+#   JUDGE_MODEL       LLM-as-a-Judge に使うモデル（既定：openai/gpt-5.4-mini）
+#   REASONING=1       推論型モデル向けの生成パラメータに切り替える
+#                     （temperature=0.6, top_p=0.95, max_new_tokens=32768）
+#   MAX_NEW_TOKENS    全ベンチマークの出力トークン数上限をまとめて上書きする
+#   EXTRA_GEN_PARAMS  全ベンチマークの生成パラメータに項目を追加する．推論型としても
+#                     非推論型としても動作するモデルの推論を有効にする場合に使う
+#                     （例：EXTRA_GEN_PARAMS='reasoning_effort:"medium"'）
+#   MMLU_PROX_CHUNK   MMLU-ProX を何科目ずつのプロセスに分割するか（既定：8）
+#   SUITE_INCLUDE     実行するベンチマークを拡張正規表現で絞る
+#   SUITE_EXCLUDE     除外するベンチマークを拡張正規表現で指定する
+#                     （複数プロセスに分けて並行実行する場合に使う）
 
 set -uo pipefail
 
@@ -181,6 +195,17 @@ if [[ -n "${MAX_NEW_TOKENS:-}" ]]; then
     unset _preset
 fi
 
+# EXTRA_GEN_PARAMS で全ベンチマークの生成パラメータに項目を追加できる．
+# 例：推論型としても非推論型としても動作するモデルの推論を有効にする
+#   EXTRA_GEN_PARAMS='reasoning_effort:"medium"'
+# 値が文字列の場合は，JSONとして解釈されるためダブルクォートで囲む．
+if [[ -n "${EXTRA_GEN_PARAMS:-}" ]]; then
+    for _preset in GREEDY GREEDY_LONG CODE SAMPLING MT_BENCH; do
+        printf -v "$_preset" '%s' "${!_preset},${EXTRA_GEN_PARAMS}"
+    done
+    unset _preset
+fi
+
 log "===== suite start: model=$MODEL_NAME judge=$JUDGE_MODEL out=$OUT_DIR reasoning=${REASONING:-0} ====="
 
 # ---- 追加したベンチマーク -------------------------------------------------
@@ -224,15 +249,27 @@ run_task jhumaneval               "swallow|swallow_jhumaneval"       "$CODE"
 run_task lcb_v6                   "swallow|lcb:codegeneration_v6"    "$SAMPLING"
 
 # ---- MMLU-ProX（日本語）：91科目 -----------------------------------------
-# 科目ごとにサブセットが分かれているため，1プロセスにまとめて実行する．
-MMLU_PROX_TASKS=$("$LIGHTEVAL" tasks list 2>/dev/null \
-    | grep -oE 'swallow\|mmlu_prox_japanese:[A-Za-z0-9_]+' | sort -u \
-    | sed 's/$/|0|0/' | paste -sd,)
-if [[ -n "$MMLU_PROX_TASKS" ]]; then
-    run_task_raw mmlu_prox_japanese "$MMLU_PROX_TASKS" "$GREEDY"
-else
+# 科目ごとにサブセットが分かれている．全科目を1プロセスにまとめて実行すると，
+# lighteval は実行の最後にしか結果を書き出さないため，途中で中断すると
+# それまでの生成が全て失われる（推論型モデルでは8時間近くかかる）．
+# そのため MMLU_PROX_CHUNK 科目ずつに分割し，チャンクごとに完了マーカーを作る．
+# 中断時に失われるのは最大1チャンク分だけになる．
+MMLU_PROX_CHUNK="${MMLU_PROX_CHUNK:-8}"
+mapfile -t _mmlu_subsets < <("$LIGHTEVAL" tasks list 2>/dev/null \
+    | grep -oE 'swallow\|mmlu_prox_japanese:[A-Za-z0-9_]+' | sort -u)
+if [[ ${#_mmlu_subsets[@]} -eq 0 ]]; then
     log "FAIL  mmlu_prox_japanese -- could not enumerate the subsets"
+else
+    log "INFO  mmlu_prox_japanese: ${#_mmlu_subsets[@]} subsets, chunk size $MMLU_PROX_CHUNK"
+    _chunk_index=0
+    for (( _i = 0; _i < ${#_mmlu_subsets[@]}; _i += MMLU_PROX_CHUNK )); do
+        _chunk_index=$(( _chunk_index + 1 ))
+        _chunk_specs=$(printf '%s|0|0\n' "${_mmlu_subsets[@]:_i:MMLU_PROX_CHUNK}" | paste -sd,)
+        run_task_raw "$(printf 'mmlu_prox_japanese_c%02d' "$_chunk_index")" "$_chunk_specs" "$GREEDY"
+    done
+    unset _chunk_index _chunk_specs _i
 fi
+unset _mmlu_subsets
 
 log "===== suite done ====="
 log "completed: $(ls -1 "$STATE_DIR"/*.done 2>/dev/null | wc -l), failed: $(ls -1 "$STATE_DIR"/*.failed 2>/dev/null | wc -l)"
