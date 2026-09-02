@@ -305,8 +305,15 @@ class LiteLLMClient(LightevalModel):
             max_new_tokens = min(max_new_tokens * 10, 32000)
         return max_new_tokens
 
-    def __call_api(self, prompt, return_logits, max_new_tokens, num_samples, stop_sequence):
-        """Make API call with retries."""
+    def __call_api(self, prompt, return_logits, max_new_tokens, num_samples, stop_sequence, temperature=None):
+        """Make API call with retries.
+
+        Args:
+            temperature: この呼び出しに限って使う temperature．入力ごとに
+                temperature が異なるベンチマーク（MT-Bench）で使う．
+                ``self.generation_parameters`` を書き換えると並列実行時に
+                他のスレッドの設定を壊すため，引数で引き渡す．
+        """
 
         max_n = getattr(self.generation_parameters, "max_n", None)
 
@@ -326,7 +333,8 @@ class LiteLLMClient(LightevalModel):
                     return_logits=return_logits,
                     max_new_tokens=max_new_tokens,
                     stop_sequence=stop_sequence,
-                    n=1
+                    n=1,
+                    temperature=temperature,
                 )
 
             with ThreadPoolExecutor(num_samples) as executor:
@@ -338,10 +346,11 @@ class LiteLLMClient(LightevalModel):
                 return_logits=return_logits,
                 max_new_tokens=max_new_tokens,
                 stop_sequence=stop_sequence,
-                n=num_samples
+                n=num_samples,
+                temperature=temperature,
             )
 
-    def _call_litellm_completion(self, prompt, return_logits, max_new_tokens, stop_sequence, n):
+    def _call_litellm_completion(self, prompt, return_logits, max_new_tokens, stop_sequence, n, temperature=None):
         """
         litellm.completion 呼び出し・リトライ処理． self.__call_api() をリネームしただけ
         """
@@ -367,6 +376,9 @@ class LiteLLMClient(LightevalModel):
                     logger.warning("O* models and gpt-5 do not support temperature, top_p, stop sequence. Disabling.")
                 else:
                     kwargs.update(self.generation_parameters.to_litellm_dict())
+                    # 呼び出しごとの temperature の上書き（MT-Bench のカテゴリ別 temperature）．
+                    if temperature is not None:
+                        kwargs["temperature"] = temperature
 
                 # 推論型・非推論型を問わず reasoning_effort の設定を許容する
                 if getattr(self.generation_parameters, "reasoning_effort", None) is not None:
@@ -576,17 +588,33 @@ class LiteLLMClient(LightevalModel):
             leave=False,
             disable=False,
         ):
-            # TODO: self._call_api_parallelを使用して各ターンの出力を生成すれば、並列化により高速化できる。
-            # ただ、入力によってtemperatureが異なる場合に対応できないため、現状はself._call_apiを使用している。
-            # したがって、並列化を実現するには、まず入力単位でtemperatureを指定できるように実装を変更する必要がある。
             contexts = [c.context for c in dataset]
             max_new_tokens = dataset[0].generation_size  # could be none
             return_logits = dataset[0].use_logits
             num_samples = dataset[0].num_samples
             stop_sequence = requests[0].stop_sequence
-            for idx in tqdm(range(len(contexts))):
+
+            # 独自拡張：設問単位で並列に実行する．
+            # 1つの設問の中ではターンを順番に処理する必要がある（後のターンの
+            # プロンプトに前のターンの応答が埋め込まれる）が，設問同士は独立なので
+            # 並列化できる．逐次実行では推論APIの同時接続数を1〜num_samplesしか
+            # 使えず，MT-Bench（80問×2ターン）に数時間かかっていた．
+            #
+            # 元の実装は入力ごとの temperature を self.generation_parameters に
+            # 一時的に書き込んでいたが，共有状態のためスレッド間で壊れる．
+            # 代わりに __call_api() の引数で呼び出しごとに引き渡す．
+            def _run_one_request(idx: int):
                 turn_results = []
                 multi_turn_context_all = contexts[idx]
+                preset_temperature = requests[idx].temperature
+                # 明示的に指定された temperature が優先．未指定ならベンチマーク側の
+                # カテゴリ別 temperature を使う．
+                if self.generation_parameters.temperature is not None:
+                    temperature = self.generation_parameters.temperature
+                else:
+                    temperature = preset_temperature
+                max_gen_text_length = requests[idx].max_gen_text_length
+
                 for turn in range(len(multi_turn_context_all)):
                     tmp_turn = 0
                     multi_turn_context = multi_turn_context_all[turn]
@@ -594,29 +622,45 @@ class LiteLLMClient(LightevalModel):
                         if "model_response" in multi_turn_context[i]["content"]:
                             multi_turn_context[i]["content"] = multi_turn_context[i]["content"].format(model_response=turn_results[tmp_turn][0])
                             tmp_turn += 1
-                    preset_temperature = requests[idx].temperature
-                    original_temperature = self.generation_parameters.temperature
-                    if original_temperature is None and preset_temperature is not None:
-                        self.generation_parameters.temperature = preset_temperature
 
                     # temperature=0のときはN回生成するのは無駄なのでnum_samples=1でAPI呼び出し、gen_textをnum_samples個複製
-                    if self.generation_parameters.temperature is not None and self.generation_parameters.temperature == 0:
-                        multi_turn_response = self.__call_api(multi_turn_context, return_logits, max_new_tokens, 1, stop_sequence)
+                    if temperature is not None and temperature == 0:
+                        multi_turn_response = self.__call_api(
+                            multi_turn_context, return_logits, max_new_tokens, 1, stop_sequence, temperature=temperature
+                        )
                         gen_text = multi_turn_response.choices[0].message.content
                         tmp_results = [gen_text] * num_samples
                     else:
-                        multi_turn_response = self.__call_api(multi_turn_context, return_logits, max_new_tokens, num_samples, stop_sequence)
+                        multi_turn_response = self.__call_api(
+                            multi_turn_context, return_logits, max_new_tokens, num_samples, stop_sequence, temperature=temperature
+                        )
                         tmp_results = [choice.message.content for choice in multi_turn_response.choices]
 
-                    self.generation_parameters.temperature = original_temperature
                     # max_gen_text_lengthで文字列をleft truncate（vllm_model.pyと同様の処理）
-                    if request.max_gen_text_length is not None:
+                    if max_gen_text_length is not None:
                         for i, text in enumerate(tmp_results):
-                            if text is not None and len(text) > request.max_gen_text_length:
-                                logger.warning(f"Truncating generated text to {request.max_gen_text_length} characters.")
-                                tmp_results[i] = text[:request.max_gen_text_length]
+                            if text is not None and len(text) > max_gen_text_length:
+                                logger.warning(f"Truncating generated text to {max_gen_text_length} characters.")
+                                tmp_results[i] = text[:max_gen_text_length]
                     turn_results.append(tmp_results)
+                return turn_results
 
+            # __call_api() は num_samples 個の生成を内部で並列に呼び出すため，
+            # 設問側の並列度は CONCURENT_CALLS / num_samples とし，
+            # 全体の同時接続数が CONCURENT_CALLS を超えないようにする．
+            n_concurrency = max(1, self.CONCURENT_CALLS // max(num_samples, 1))
+            n_concurrency = min(n_concurrency, max(len(contexts), 1))
+            with ThreadPoolExecutor(n_concurrency) as executor:
+                # executor.map は入力順に結果を返すので，応答の順序は逐次実行時と同じ．
+                all_turn_results = list(
+                    tqdm(
+                        executor.map(_run_one_request, range(len(contexts))),
+                        total=len(contexts),
+                        desc=f"Multi turn requests (concurrency={n_concurrency})",
+                    )
+                )
+
+            for turn_results in all_turn_results:
                 results.append(
                     GenerativeMultiturnResponse(
                         result=turn_results,
