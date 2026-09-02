@@ -28,6 +28,7 @@
 import re
 import logging
 import ast
+from functools import lru_cache
 from typing import Optional
 
 import numpy as np
@@ -197,14 +198,27 @@ def compute_japanese_ratio_sample(
     return metrics
 
 
+@lru_cache(maxsize=8192)
+def _count_chars(text: str) -> tuple[int, int]:
+    """テキストの文字数と日本語文字数を返す（結果をキャッシュする）．
+
+    ブートストラップによる標準誤差の計算では，同じ母集団から復元抽出を
+    1000回繰り返すため，同じ予測に対する Markdown→HTML→テキスト抽出が
+    数十万回実行される．BeautifulSoup による解析は1回あたり数ミリ秒
+    かかるため，これがMT-Benchの集計処理の大半を占めていた．
+    ユニークな予測は数百件しかないので，結果をキャッシュすることで
+    計算量が抽出回数に依存しなくなる（計算結果は変わらない）．
+    """
+    plain_text = extract_plain_text(text)
+    return len(plain_text), count_japanese_chars(plain_text)
+
+
 def compute_japanese_ratio_corpus(prediction_list: list[list[tuple[str]]]) -> dict[str, float]:
     total_num_chars = 0
     total_num_ja_chars = 0
     for prediction in prediction_list:
         for first_turn, second_turn in prediction:
-            plain_text = extract_plain_text(first_turn + second_turn)
-            num_chars = len(plain_text)
-            num_ja_chars = count_japanese_chars(plain_text)
+            num_chars, num_ja_chars = _count_chars(first_turn + second_turn)
             total_num_chars += num_chars
             total_num_ja_chars += num_ja_chars
 
