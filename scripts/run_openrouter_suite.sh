@@ -120,6 +120,7 @@ run_task_raw() {
     rm -f "$running_marker"
 }
 
+# 非推論型モデル向けの生成パラメータ（BENCHMARKS.md の推奨設定）．
 GREEDY="temperature:0.0,max_new_tokens:4096"
 GREEDY_LONG="temperature:0.0,max_new_tokens:8192"
 CODE="temperature:0.2,top_p:0.95,max_new_tokens:4096"
@@ -127,7 +128,35 @@ SAMPLING="temperature:0.6,top_p:0.95,max_new_tokens:8192"
 # MT-Bench はカテゴリごとの temperature が自動適用されるため temperature を指定しない．
 MT_BENCH="max_new_tokens:4096"
 
-log "===== suite start: model=$MODEL_NAME judge=$JUDGE_MODEL out=$OUT_DIR ====="
+# 推論型モデルを評価する場合は REASONING=1 を指定する．
+# BENCHMARKS.md の「Swallow LLM Leaderboard との関係」に従い，
+# 全ベンチマークで確率的デコーディング（temperature=0.6, top_p=0.95）を用いる
+# （非推論型と異なり，ベンチマークごとの推奨設定より
+#   モデル種別の方針が優先される旨が記載されている）．
+#
+# 出力トークン数の上限は非推論型より大幅に大きくする．推論型モデルは
+# 推論過程にトークンを消費するため，上限が小さいと推論の途中で打ち切られ，
+# 最終回答が空のまま不正解と判定されてしまう．
+# （実測：簡単な算数1問でも推論だけで1,700〜2,200トークンを消費する）
+if [[ "${REASONING:-0}" == "1" ]]; then
+    GREEDY="temperature:0.6,top_p:0.95,max_new_tokens:32768"
+    GREEDY_LONG="temperature:0.6,top_p:0.95,max_new_tokens:32768"
+    CODE="temperature:0.6,top_p:0.95,max_new_tokens:32768"
+    SAMPLING="temperature:0.6,top_p:0.95,max_new_tokens:32768"
+    MT_BENCH="temperature:0.6,top_p:0.95,max_new_tokens:32768"
+fi
+
+# MAX_NEW_TOKENS で全ベンチマークの出力トークン数の上限をまとめて上書きできる．
+# 上限に到達して出力が打ち切られると，回答が途中で切れて不正解と判定されるため，
+# モデルに合わせて引き上げたい場合に使う．
+if [[ -n "${MAX_NEW_TOKENS:-}" ]]; then
+    for _preset in GREEDY GREEDY_LONG CODE SAMPLING MT_BENCH; do
+        printf -v "$_preset" '%s' "$(sed -E "s/max_new_tokens:[0-9]+/max_new_tokens:${MAX_NEW_TOKENS}/" <<<"${!_preset}")"
+    done
+    unset _preset
+fi
+
+log "===== suite start: model=$MODEL_NAME judge=$JUDGE_MODEL out=$OUT_DIR reasoning=${REASONING:-0} ====="
 
 # ---- 追加したベンチマーク -------------------------------------------------
 run_task jfbench_n1               "swallow|jfbench:n1"               "$GREEDY"

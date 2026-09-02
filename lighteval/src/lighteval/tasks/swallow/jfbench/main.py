@@ -64,6 +64,7 @@ from lighteval.metrics.utils.metric_utils import (
 from lighteval.tasks.lighteval_task import LightevalTaskConfig
 from lighteval.tasks.requests import Doc
 from lighteval.tasks.swallow.jfbench._vendor_jfbench.benchmark import build
+from lighteval.tasks.swallow.jfbench._vendor_jfbench.prompts import get_all_ifbench_prompts
 from lighteval.tasks.swallow.jfbench.judge_client import JudgeBackedLLMClient
 from lighteval.utils.local_datasets import register_local_dataset
 
@@ -124,19 +125,7 @@ def _build_benchmark_data(n_constraints: int) -> list:
     """
     client = _judge_client()
     if n_constraints == 1:
-        logger.info(
-            "Building JFBench benchmark data for n_constraints=1. "
-            "JFBench enumerates every (prompt, constraint) pair before sampling, "
-            "so this takes a while."
-        )
-        data = list(
-            build.get_ifbench_benchmark_data(
-                client, seed=SEED, constraint_set=CONSTRAINT_SET
-            )
-        )
-        # 公式実装（`jfbench.benchmark.eval._build_dataset`）と同じく，
-        # 生成器の側でシャッフルされたリストの先頭から必要な件数を取る．
-        data = data[:N_BENCHMARK_DATA]
+        data = _build_single_constraint_data(client)
     else:
         data = list(
             build.get_ifbench_benchmark_data_with_multiple_constraints(
@@ -148,6 +137,68 @@ def _build_benchmark_data(n_constraints: int) -> list:
             )
         )
     logger.info(f"Built {len(data)} JFBench entries for n_constraints={n_constraints}.")
+    return data
+
+
+def _build_single_constraint_data(client) -> list:
+    """制約数1の設問を，選ばれる分だけ構築する．
+
+    JFBench 公式の生成器（`get_benchmark_data_with_single_constraint`）は
+    「全ての（指示文 × 制約）の組を構築 → シードつきでシャッフル →
+    先頭から必要な件数を取る」という手順を踏む．IFBench のプロンプト300件と
+    test 制約集合174種類の場合，組は52,200件になり，実際に使う200件のために
+    52,200件を同時にメモリ上に保持することになる（1プロセスあたり4〜5GB）．
+
+    シャッフル後にどの位置の要素が選ばれるかは要素の内容に依存せず，
+    乱数シードと要素数だけで決まる．そこで，同じシードで添字の並びを
+    シャッフルして選ばれる添字を求め，その添字に対応する設問だけを構築する．
+    生成される設問は公式の手順と完全に一致する（テストで確認済み）．
+    """
+    prompts = get_all_ifbench_prompts()
+    collections = build.get_constraint_collections(CONSTRAINT_SET)
+    rule_based = collections.rule_based
+    llm_based = collections.llm_based
+    factories_per_prompt = len(rule_based) + len(llm_based)
+    total = len(prompts) * factories_per_prompt
+
+    # 公式実装では構築済みのリストをシャッフルするが，順列は要素数と
+    # シードだけで決まるため，添字の配列をシャッフルしても同じ結果になる．
+    order = np.arange(total)
+    np.random.default_rng(SEED).shuffle(order)
+    selected = order[:N_BENCHMARK_DATA]
+
+    logger.info(
+        f"Building {len(selected)} of {total} possible JFBench entries "
+        f"for n_constraints=1 (only the entries the official sampling selects)."
+    )
+
+    data = []
+    for index in selected:
+        prompt_index, offset = divmod(int(index), factories_per_prompt)
+        prompt = prompts[prompt_index]
+        if offset < len(rule_based):
+            factory = rule_based[offset]
+            seed_value = build._stable_seed(PROMPT_SOURCE, str(prompt_index), "rule", str(offset))
+            constraint = factory(seed=seed_value, document=prompt.document)
+        else:
+            factory_index = offset - len(rule_based)
+            factory = llm_based[factory_index]
+            seed_value = build._stable_seed(
+                PROMPT_SOURCE, str(prompt_index), "llm", str(factory_index)
+            )
+            constraint = factory(client, prompt.document, seed=seed_value)
+
+        constraints = [constraint]
+        meta_data = build.BenchmarkData.build_meta_data(
+            prompt_source=PROMPT_SOURCE,
+            data_id=f"{prompt_index}-{constraint.__class__.__name__}",
+            prompt=prompt,
+            constraints=constraints,
+            constraint_set=CONSTRAINT_SET,
+        )
+        data.append(
+            build.BenchmarkData(prompt=prompt, constraints=constraints, meta_data=meta_data)
+        )
     return data
 
 
