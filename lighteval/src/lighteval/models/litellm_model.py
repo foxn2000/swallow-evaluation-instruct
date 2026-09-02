@@ -372,9 +372,19 @@ class LiteLLMClient(LightevalModel):
                 if getattr(self.generation_parameters, "reasoning_effort", None) is not None:
                     kwargs["reasoning_effort"] = self.generation_parameters.reasoning_effort
                     logger.info(f"Set reasoning_effort: {self.generation_parameters.reasoning_effort}")
-                    # if not litellm.supports_reasoning(self.model):
-                    #     logger.warning(f"Model {self.model} does not support reasoning. Setting reasoning_effort may raise an error.")
-                    
+                    # litellm は自身が持つモデル情報を見て「推論に対応していない」と
+                    # 判断したモデルの reasoning_effort を検証で弾く．本ファイルでは
+                    # litellm.drop_params=True にしているため，エラーにはならない代わりに
+                    # パラメータが黙って捨てられる（推論が有効にならない）．
+                    # OpenRouter のように，モデル情報が litellm 側に追随していなくても
+                    # 実際には推論を切り替えられるプロバイダがあるため，
+                    # allowed_openai_params で明示的に転送を許可する．
+                    allowed = list(kwargs.get("allowed_openai_params") or [])
+                    if "reasoning_effort" not in allowed:
+                        allowed.append("reasoning_effort")
+                    kwargs["allowed_openai_params"] = allowed
+
+
                 # chat template kwargs に対応
                 if getattr(self.generation_parameters, "chat_template_kwargs", None) is not None:
                     if "extra_body" not in kwargs:
