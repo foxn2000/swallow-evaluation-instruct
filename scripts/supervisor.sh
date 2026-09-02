@@ -13,6 +13,7 @@
 #                           MT-Bench は判定処理のために lighteval 自身を4本ほど
 #                           fork するため，1プロセスあたり最大で6GB近く必要に
 #                           なることがある．上限と下限はこれを見込んだ値．
+#   SUPERVISOR_STALL_TIMEOUT ログがこの秒数更新されないベンチマークを停止する（既定2700）
 #   SUPERVISOR_SLOTS_FILE   スロット定義ファイル．1行1スロットで
 #                           <モデルID>|<出力ディレクトリ名>|<種類(main|mmlu)>|<必要本数>|<追加生成パラメータ>
 #                           指定しない場合はスクリプト内の既定値を使う．
@@ -141,9 +142,41 @@ start_slot() {
     log "STARTED $out_name/$tag (model=$model kind=$kind)"
 }
 
+# 実行中のベンチマークのログが一定時間更新されない場合，そのプロセスを停止する．
+# lighteval が内部で使う multiprocessing のワーカーが OOM で殺されると，
+# 親プロセスが futex で永久に待ち続け，ログの更新が止まったまま何時間も
+# 居座ることがある（実際に MT-Bench で2時間の無音ハングが発生した）．
+# ドライバは停止を検知して FAIL を記録し，次のベンチマークに進む．
+# 失敗が残っている限り完了マーカーは作られないため，後で再実行される．
+STALL_TIMEOUT="${SUPERVISOR_STALL_TIMEOUT:-2700}"
+
+kill_stalled_tasks() {
+    local marker label out_name logfile age drv pid child now
+    now=$(date +%s)
+    for marker in runs/*/state/*.running; do
+        [[ -f "$marker" ]] || continue
+        label=$(basename "$marker" .running)
+        out_name=$(basename "$(dirname "$(dirname "$marker")")")
+        logfile="runs/$out_name/logs/$label.log"
+        [[ -f "$logfile" ]] || continue
+        age=$(( now - $(stat -c %Y "$logfile" 2>/dev/null || echo "$now") ))
+        (( age > STALL_TIMEOUT )) || continue
+
+        drv=$(sed -n 's/^pid=\([0-9]*\).*/\1/p' "$marker")
+        [[ -n "$drv" ]] && kill -0 "$drv" 2>/dev/null || continue
+        for pid in $(pgrep -P "$drv" 2>/dev/null); do
+            log "STALLED $out_name/$label (log untouched for ${age}s) -- killing lighteval pid $pid"
+            for child in $(pgrep -P "$pid" 2>/dev/null); do kill -9 "$child" 2>/dev/null; done
+            kill -9 "$pid" 2>/dev/null
+        done
+    done
+    return 0
+}
+
 log "===== supervisor start (pid $$, interval ${INTERVAL}s, max_procs $MAX_PROCS, mem_floor ${MEM_FLOOR_MB}MB) ====="
 
 while true; do
+    kill_stalled_tasks
     for slot in "${SLOTS[@]}"; do
         IFS='|' read -r model out_name kind want extra <<<"$slot"
 
