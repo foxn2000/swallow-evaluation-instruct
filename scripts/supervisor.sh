@@ -61,6 +61,9 @@ echo $$ >"$LOCK"
 trap 'rm -f "$LOCK"' EXIT
 
 # スロット定義：<モデルID>|<出力ディレクトリ名>|<種類>|<必要本数>|<追加生成パラメータ>
+# 必要本数は「希望」であり，実際に起動するのは SUPERVISOR_MAX_PROCS と
+# 空きメモリの下限に収まる範囲だけ．main 側が完了してプロセス枠が空くと，
+# 空いた枠が自動的に MMLU の2本目に回る．
 # 上から順に優先して起動する．main を優先するのは，個別のベンチマークを
 # 消化してプロセス枠を早く空けるため．
 SLOTS=(
@@ -68,10 +71,10 @@ SLOTS=(
   "qwen/qwen3.8-27b|qwen3.8-27b|main|1|"
   "moonshotai/kimi-k2.6|kimi-k2.6|main|1|"
   'google/gemma-4-31b-it|gemma-4-31b-it-reasoning|main|1|reasoning_effort:"medium"'
-  "deepseek/deepseek-v4-flash-0731|deepseek-v4-flash|mmlu|1|"
-  "qwen/qwen3.8-27b|qwen3.8-27b|mmlu|1|"
-  "moonshotai/kimi-k2.6|kimi-k2.6|mmlu|1|"
-  'google/gemma-4-31b-it|gemma-4-31b-it-reasoning|mmlu|1|reasoning_effort:"medium"'
+  "deepseek/deepseek-v4-flash-0731|deepseek-v4-flash|mmlu|2|"
+  "qwen/qwen3.8-27b|qwen3.8-27b|mmlu|2|"
+  "moonshotai/kimi-k2.6|kimi-k2.6|mmlu|2|"
+  'google/gemma-4-31b-it|gemma-4-31b-it-reasoning|mmlu|2|reasoning_effort:"medium"'
 )
 
 # スロット定義を外部ファイルで上書きできるようにする（空行と # から始まる行は無視）．
