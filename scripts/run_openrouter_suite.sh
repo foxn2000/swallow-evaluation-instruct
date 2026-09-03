@@ -271,7 +271,19 @@ run_task aime_25                  "swallow|aime_N4:25"               "$SAMPLING"
 
 # ---- コード生成 -----------------------------------------------------------
 run_task jhumaneval               "swallow|swallow_jhumaneval"       "$CODE"
-run_task lcb_v6                   "swallow|lcb:codegeneration_v6"    "$SAMPLING"
+# LiveCodeBench は1問につき10回生成するため1回の実行に数時間かかる．
+# lighteval は実行の最後にしか結果を書き出さないので，実行環境が途中で
+# 再起動すると全て失われる．LCB_NUM_PARTS を設定すると分割して実行し，
+# 中断時の損失を 1/LCB_NUM_PARTS に抑えられる．
+if [[ "${LCB_NUM_PARTS:-0}" -gt 1 ]]; then
+    for _lcb_part in $(seq 1 "$LCB_NUM_PARTS"); do
+        run_task "lcb_v6_part${_lcb_part}of${LCB_NUM_PARTS}" \
+            "swallow|lcb:codegeneration_v6_part${_lcb_part}of${LCB_NUM_PARTS}" "$SAMPLING"
+    done
+    unset _lcb_part
+else
+    run_task lcb_v6                   "swallow|lcb:codegeneration_v6"    "$SAMPLING"
+fi
 
 # ---- MMLU-ProX（日本語）：91科目 -----------------------------------------
 # 科目ごとにサブセットが分かれている．全科目を1プロセスにまとめて実行すると，

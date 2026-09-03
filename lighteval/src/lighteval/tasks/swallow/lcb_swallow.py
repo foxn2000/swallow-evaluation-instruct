@@ -4,6 +4,8 @@
 
 from typing import Any
 from functools import partial
+import hashlib
+import os
 
 import numpy as np
 from aenum import extend_enum
@@ -124,10 +126,44 @@ extend_enum(Metrics, "lcb_pass_10", lcb_codegenmetric_passk_10)
 
 configs = get_dataset_config_names("livecodebench/code_generation_lite", trust_remote_code=True)
 
-lcb_swallow_tasks = []
-for subset in configs:
-    name = f"lcb:codegeneration_{subset}"
-    task = LightevalTaskConfig(
+
+# 独自拡張：問題を分割して実行できるようにする．
+#
+# LiveCodeBench は1問につき NUM_SAMPLES 回生成するため，推論型モデルでは
+# 1回の実行に数時間かかる．lighteval は実行の最後にしか結果を書き出さないので，
+# 途中で中断されるとその全てが失われる．実行環境が数時間おきに再起動する状況では
+# いつまでも完了しない．
+#
+# LCB_NUM_PARTS を設定すると，各サブセットに
+#   lcb:codegeneration_{サブセット}_part{i}of{N}
+# という分割タスクが追加される．問題は question_id のハッシュで振り分けるため，
+# 分割数を変えなければ毎回同じ問題が同じ part に入る．
+#
+# 分割して実行した場合，pass@k は part ごとの値になる．全体の値を得るには
+# part ごとの問題数で重み付けして平均する（保存される詳細（details）には
+# 問題ごとの結果が入っているので，そこから直接計算してもよい）．
+LCB_NUM_PARTS = int(os.getenv("LCB_NUM_PARTS", "0"))
+
+
+def _lcb_partition_key(line: dict[str, Any]) -> str:
+    for key in ("question_id", "problem_id", "question_title"):
+        value = line.get(key)
+        if value:
+            return str(value)
+    return str(line.get("question_content", ""))
+
+
+def lcb_part_filter(line: dict[str, Any], part_index: int, num_parts: int) -> bool:
+    """問題を num_parts 個のグループに振り分け，part_index のものだけを残す．
+
+    Python の hash() は実行ごとに変わるため，SHA-256 を使って安定させる．
+    """
+    digest = hashlib.sha256(_lcb_partition_key(line).encode("utf-8")).hexdigest()
+    return int(digest[:16], 16) % num_parts == part_index
+
+
+def _make_lcb_task(name: str, subset: str, hf_filter=None) -> LightevalTaskConfig:
+    return LightevalTaskConfig(
         name=name,
         suite=["swallow"],
         prompt_function=lcb_codegeneration_prompt_fn,
@@ -135,10 +171,25 @@ for subset in configs:
         hf_subset=subset,
         hf_avail_splits=["test"],
         evaluation_splits=["test"],
+        hf_filter=hf_filter,
         generation_size=None,
         metric=[Metrics.lcb_pass_1, Metrics.lcb_pass_10],
         stop_sequence=[],
         trust_dataset=True,
         version=0,
     )
-    lcb_swallow_tasks.append(task)
+
+
+lcb_swallow_tasks = []
+for subset in configs:
+    lcb_swallow_tasks.append(_make_lcb_task(f"lcb:codegeneration_{subset}", subset))
+
+    if LCB_NUM_PARTS > 1:
+        for part_index in range(LCB_NUM_PARTS):
+            lcb_swallow_tasks.append(
+                _make_lcb_task(
+                    f"lcb:codegeneration_{subset}_part{part_index + 1}of{LCB_NUM_PARTS}",
+                    subset,
+                    hf_filter=partial(lcb_part_filter, part_index=part_index, num_parts=LCB_NUM_PARTS),
+                )
+            )
