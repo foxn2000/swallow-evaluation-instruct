@@ -27,6 +27,15 @@
 #   SUITE_INCLUDE     実行するベンチマークを拡張正規表現で絞る
 #   SUITE_EXCLUDE     除外するベンチマークを拡張正規表現で指定する
 #                     （複数プロセスに分けて並行実行する場合に使う）
+#
+# 並列度についての注意：
+#   lighteval は設問側の並列度を
+#     n_concurrency = LITELLM_CONCURRENT_CALLS / ロールアウト数
+#   として決める．LiveCodeBench（10ロールアウト）や AIME（4ロールアウト）では
+#   割り算の結果が小さくなり，既定の32では LiveCodeBench の場合に同時3問しか
+#   処理できない．1呼び出しに数分かかる推論型モデルではこれが致命的に効くため，
+#   ロールアウト数の多いベンチマークを実行する場合は LITELLM_CONCURRENT_CALLS を
+#   引き上げること（例：80 なら LiveCodeBench で同時8問）．
 
 set -uo pipefail
 

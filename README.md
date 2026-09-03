@@ -354,7 +354,8 @@ lighteval endpoint litellm \
 主な環境変数は以下のとおりです．  
 
 * `OPENAI_API_KEY`：MT-Bench(日英) で LLM-as-a-judge として OpenAI のモデルを呼び出すために使用します．  
-* `LITELLM_CONCURRENT_CALLS`：LiteLLMが推論APIを呼ぶときの最大並列数．大きくすると処理速度は向上するかもしれませんが，推論APIの挙動が不安定になることもあります．  
+* `LITELLM_CONCURRENT_CALLS`：LiteLLMが推論APIを呼ぶときの最大並列数．大きくすると処理速度は向上するかもしれませんが，推論APIの挙動が不安定になることもあります．
+  なお，設問側の並列度は「この値 ÷ ロールアウト数」で決まります．LiveCodeBench（10ロールアウト）や AIME（4ロールアウト）のように1問あたり複数回生成するベンチマークでは，既定値の20や32では同時に処理できる設問数が数問にとどまります．1回の生成に時間がかかる推論型モデルを評価する場合は，ロールアウト数を掛けた値を指定してください（例：LiveCodeBench で同時8問なら80）．  
 * `JUDGE_MODEL_NAME`（独自）：LLM-as-a-Judge に使うモデル名．ベンチマーク側の既定値を上書きします．
 * `JUDGE_BASE_URL`（独自）：LLM-as-a-Judge に使う推論APIのURL．
 * `JUDGE_API_KEY`（独自）：LLM-as-a-Judge に使う推論APIのAPIキー．
