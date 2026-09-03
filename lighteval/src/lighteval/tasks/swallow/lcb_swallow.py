@@ -84,11 +84,18 @@ def codegen_metric_passk(predictions: list[str], formatted_doc: Doc, k: int , **
     # This is a list of lists because
     evaluation_sample = [{"input_output": json.dumps(evaluation_sample)}]
     
+    # 生成コードの実行は ProcessPoolExecutor で並列化されるが，fork した
+    # 子プロセスは親のメモリ（推論APIのクライアントやデータセットを抱えた
+    # 状態で1.5GBを超える）を引き継ぐ．複数のモデルを並行評価していると
+    # これだけで十数GBに達し，OOM が起きる．既定を2に下げ，環境変数で
+    # 調整できるようにする．
+    num_process_evaluate = int(os.getenv("LCB_NUM_PROCESS_EVALUATE", "2"))
+
     metrics, results = codegen_metrics(
         evaluation_sample,
         generated_code_snippets,
         k_list=[k],
-        num_process_evaluate=8,
+        num_process_evaluate=num_process_evaluate,
     )
     
     # Save results in the formatted_doc
