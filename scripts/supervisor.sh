@@ -101,11 +101,11 @@ count_drivers() {
 # その種類が完了しているか（完了マーカーがあるか）．
 kind_complete() {
     local out_name="$1" kind="$2"
-    if [[ "$kind" == mmlu ]]; then
-        compgen -G "runs/$out_name/state/.complete.mmlu*" >/dev/null 2>&1
-    else
-        [[ -f "runs/$out_name/state/.complete.main" ]]
-    fi
+    # 完了マーカーは .complete.<SUITE_PART> という名前で作られる．
+    # SUITE_PART は main1 / main2 / mmlu1 のように連番が付くため，
+    # 前方一致で探す（.complete.main を完全一致で探すと永久に見つからず，
+    # 完了済みの担当分のドライバを起動し続けてしまう）．
+    compgen -G "runs/$out_name/state/.complete.$kind*" >/dev/null 2>&1
 }
 
 available_mb() { awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo; }
